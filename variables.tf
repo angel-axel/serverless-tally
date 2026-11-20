@@ -1,7 +1,7 @@
 variable "spa_bucket_name" {
   description = "Prefix for the S3 bucket that hosts the SPA. The account ID, region and '-an' suffix are appended to build the account regional namespace name."
   type        = string
-  default     = "spa-bucket"
+  default     = "tally-spa-bucket"
 }
 
 variable "domain" {

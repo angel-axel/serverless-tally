@@ -1,0 +1,33 @@
+version: 0.2
+
+env:
+  variables:
+    SITE_DIR: "site"
+
+phases:
+  pre_build:
+    commands:
+      - test -n "${BUCKET_NAME}" || { echo "BUCKET_NAME is not set"; exit 1; }
+      - test -n "${DISTRIBUTION_ID}" || { echo "DISTRIBUTION_ID is not set"; exit 1; }
+
+      - test -f "${SITE_DIR}/index.html" || { echo "${SITE_DIR}/index.html not found"; exit 1; }
+
+      - aws s3api head-bucket --bucket "${BUCKET_NAME}"
+
+      - |
+        ENABLED=$(aws cloudfront get-distribution --id "${DISTRIBUTION_ID}" --query "Distribution.DistributionConfig.Enabled" --output text)
+        if [ "${ENABLED}" != "True" ]; then
+          echo "Distribution ${DISTRIBUTION_ID} is not enabled"
+          exit 1
+        fi
+
+  build:
+    commands:
+      - aws s3 sync "./${SITE_DIR}" "s3://${BUCKET_NAME}" --delete
+
+  post_build:
+    commands:
+      - |
+        if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then
+          aws cloudfront create-invalidation --distribution-id "${DISTRIBUTION_ID}" --paths "/*"
+        fi
