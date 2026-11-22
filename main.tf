@@ -303,5 +303,5 @@ resource "aws_s3_bucket_notification" "s3_bucket_notification" {
 
 moved {
   from = aws_dynamodb_table.dynamodb_table
-  to = aws_dynamodb_table.invoices_dynamodb_table
+  to   = aws_dynamodb_table.invoices_dynamodb_table
 }
