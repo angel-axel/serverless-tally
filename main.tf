@@ -853,7 +853,7 @@ resource "aws_bedrockagentcore_harness" "invoice_matcher_harness" {
     }
   }
 
-  tools {
+  tool {
     type = "agentcore_gateway"
     name = var.tools_gateway_name
 
