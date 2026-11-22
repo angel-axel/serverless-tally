@@ -799,14 +799,21 @@ resource "aws_bedrockagentcore_gateway_target" "propose_match_target" {
                 type        = "array"
                 description = "One entry per invoice line. Omit order_line when the invoice line has no match."
                 required    = true
-                items_json = jsonencode({
+
+                items {
                   type = "object"
-                  properties = {
-                    invoice_line = { type = "integer" }
-                    order_line   = { type = "integer" }
+
+                  property {
+                    name     = "invoice_line"
+                    type     = "integer"
+                    required = true
                   }
-                  required = ["invoice_line"]
-                })
+
+                  property {
+                    name = "order_line"
+                    type = "integer"
+                  }
+                }
               }
 
               property {

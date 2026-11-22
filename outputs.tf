@@ -5,7 +5,7 @@ output "caller_identity" {
 
 output "region" {
   description = "AWS region where the resources are deployed."
-  value       = data.aws_region.region
+  value       = data.aws_region.region.region
 }
 
 output "gatekeeper_function_name" {
