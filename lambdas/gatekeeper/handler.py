@@ -9,14 +9,16 @@ What it does:
   any downstream component, including the AI agent.
 - Sends emails that SES flagged as spam or virus to ``quarantine/``.
 - Stores every attachment that is a stamped CFDI 4.0 (Mexican e-invoice) under
-  ``invoices/pending/<UUID>.xml`` and registers it in DynamoDB with status
-  ``received``.
+  ``invoices/pending/<UUID>/<SHA-256>.xml`` and registers it in DynamoDB with
+  status ``received``.
 - Copies emails without any CFDI to ``non-invoices/``.
 
 Every decision here is deterministic. There is no model in this function.
 """
 
+import base64
 import email
+import hashlib
 import json
 import os
 import pyexpat
@@ -42,6 +44,9 @@ NS = {
     "tfd": "http://www.sat.gob.mx/TimbreFiscalDigital",
 }
 MAX_XML_BYTES = 1_000_000  # a real CFDI is a few KB; anything above 1 MB is suspicious
+
+# Errors S3 returns when a conditional write finds the object already there
+OBJECT_EXISTS_ERRORS = ("PreconditionFailed", "ConditionalRequestConflict")
 
 
 def parse_cfdi(content: bytes):
@@ -83,23 +88,40 @@ def copy_email(bucket: str, key: str, destination_prefix: str) -> str:
 
 
 def store_invoice(bucket: str, email_key: str, content: bytes, data: dict) -> str:
-    """Store the XML and register it. Returns 'stored' or 'duplicate'."""
-    xml_key = f"invoices/pending/{data['uuid']}.xml"
+    """Store the XML and register it.
 
-    # 1. Store the XML only if it does not exist yet (S3 conditional write).
-    #    A forged invoice that reuses a UUID can never overwrite the original.
+    Returns:
+      'stored'    - new invoice, XML stored and registered.
+      'duplicate' - this exact file was already stored and registered (a resend
+                    or a Lambda retry). Nothing changes.
+      'conflict'  - the UUID is already registered, but this file's content is
+                    different. The file is kept as evidence; the registered
+                    invoice is not touched.
+    """
+    digest = hashlib.sha256(content).digest()
+    sha256_hex = digest.hex()
+
+    # The file name includes its own fingerprint. Two files with the same UUID
+    # but different content land in different objects, so a DynamoDB record can
+    # only ever point to the exact XML its data came from.
+    xml_key = f"invoices/pending/{data['uuid']}/{sha256_hex}.xml"
+
+    # 1. Store the XML only if this exact file is not there yet.
+    #    ChecksumSHA256 also makes S3 reject the upload if the bytes get corrupted.
     try:
         s3.put_object(
             Bucket=bucket,
             Key=xml_key,
             Body=content,
             ContentType="application/xml",
+            ChecksumSHA256=base64.b64encode(digest).decode(),
             IfNoneMatch="*",
         )
+        xml_is_new = True
     except ClientError as error:
-        if error.response["Error"]["Code"] not in ("PreconditionFailed", "ConditionalRequestConflict"):
+        if error.response["Error"]["Code"] not in OBJECT_EXISTS_ERRORS:
             raise
-        # The XML already existed: either a duplicate or a retry after a partial failure.
+        xml_is_new = False  # identical file already stored (resend or retry)
 
     # 2. Register in DynamoDB only if the UUID is new (conditional put).
     try:
@@ -110,6 +132,7 @@ def store_invoice(bucket: str, email_key: str, content: bytes, data: dict) -> st
                 "issuer_rfc": data["issuer_rfc"],
                 "type": data["type"],
                 "total": data["total"],
+                "sha256": sha256_hex,
                 "xml_key": xml_key,
                 "email_key": email_key,
                 "received_at": datetime.now(timezone.utc).isoformat(),
@@ -118,13 +141,16 @@ def store_invoice(bucket: str, email_key: str, content: bytes, data: dict) -> st
             ExpressionAttributeNames={"#uuid": "uuid"},
         )
     except ClientError as error:
-        if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return "duplicate"
-        raise
+        if error.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        # The UUID was already registered. If this file had never been seen
+        # before, its content differs from what was registered.
+        return "conflict" if xml_is_new else "duplicate"
     return "stored"
 
 
 def handler(event, context):
+    summaries = []
     for record in event["Records"]:
         bucket = record["s3"]["bucket"]["name"]
         # S3 sends the key URL-encoded (spaces as "+", etc.)
@@ -141,9 +167,10 @@ def handler(event, context):
             summary["result"] = "quarantined"
             summary["moved_to"] = copy_email(bucket, key, "quarantine/")
             print(json.dumps(summary))
+            summaries.append(summary)
             continue
 
-        stored, duplicates = [], []
+        outcomes = {"stored": [], "duplicate": [], "conflict": []}
         for part in message.iter_attachments():
             filename = (part.get_filename() or "").lower()
             if not filename.endswith(".xml"):
@@ -152,14 +179,13 @@ def handler(event, context):
             data = parse_cfdi(content)
             if data is None:
                 continue
-            if store_invoice(bucket, key, content, data) == "stored":
-                stored.append(data["uuid"])
-            else:
-                duplicates.append(data["uuid"])
+            outcome = store_invoice(bucket, key, content, data)
+            outcomes[outcome].append(data["uuid"])
 
-        summary["invoices"] = stored
-        summary["duplicates"] = duplicates
-        if not stored and not duplicates:
+        summary["invoices"] = outcomes["stored"]
+        summary["duplicates"] = outcomes["duplicate"]
+        summary["conflicts"] = outcomes["conflict"]
+        if not any(outcomes.values()):
             summary["result"] = "non_invoice"
             summary["moved_to"] = copy_email(bucket, key, "non-invoices/")
         else:
@@ -167,3 +193,5 @@ def handler(event, context):
 
         # One JSON line per email: easy to query in CloudWatch Logs Insights
         print(json.dumps(summary))
+        summaries.append(summary)
+    return summaries

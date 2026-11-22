@@ -223,7 +223,7 @@ resource "aws_ses_receipt_rule" "ses_receipt_rule" {
   ]
 }
 
-resource "aws_dynamodb_table" "dynamodb_table" {
+resource "aws_dynamodb_table" "invoices_dynamodb_table" {
   name         = var.invoices_table_name
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "uuid"
@@ -270,7 +270,7 @@ resource "aws_lambda_function" "lambda_function_gatekeeper" {
 
   environment {
     variables = {
-      INVOICES_TABLE = aws_dynamodb_table.dynamodb_table.name
+      INVOICES_TABLE = aws_dynamodb_table.invoices_dynamodb_table.name
     }
   }
 
@@ -299,4 +299,9 @@ resource "aws_s3_bucket_notification" "s3_bucket_notification" {
   }
 
   depends_on = [aws_lambda_permission.lambda_permission_gatekeeper_s3_invoke]
+}
+
+moved {
+  from = aws_dynamodb_table.dynamodb_table
+  to = aws_dynamodb_table.invoices_dynamodb_table
 }

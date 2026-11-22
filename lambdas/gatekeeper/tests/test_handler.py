@@ -6,11 +6,13 @@ Runs against simulated S3 and DynamoDB (moto), so no AWS account is needed:
     python -m unittest discover -s lambdas/gatekeeper/tests -v
 """
 
+import hashlib
 import importlib
 import os
 import sys
 import unittest
 from email.message import EmailMessage
+from unittest import mock
 
 os.environ.update(
     AWS_DEFAULT_REGION="us-east-1",
@@ -20,6 +22,7 @@ os.environ.update(
 )
 
 import boto3  # noqa: E402
+from botocore.exceptions import ClientError  # noqa: E402
 from moto import mock_aws  # noqa: E402
 
 LAMBDA_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -35,6 +38,10 @@ def cfdi(total="1160.00", uuid=UUID.lower(), with_stamp=True, namespace="http://
   <cfdi:Emisor Rfc="EKU9003173C9" Nombre="ESCUELA KEMPER URGATE"/>
   <cfdi:Complemento>{stamp}</cfdi:Complemento>
 </cfdi:Comprobante>'''.encode()
+
+
+def xml_key_for(content, uuid=UUID):
+    return f"invoices/pending/{uuid}/{hashlib.sha256(content).hexdigest()}.xml"
 
 
 BILLION_LAUGHS = (
@@ -85,28 +92,51 @@ class GatekeeperStressTest(unittest.TestCase):
         self.handler = importlib.import_module("handler")
 
     def deliver(self, key, raw_email):
-        """Simulate SES storing an email and S3 invoking the Lambda."""
+        """Simulate SES storing an email and S3 invoking the Lambda. Returns the log summary."""
         self.s3.put_object(Bucket=BUCKET, Key=key, Body=raw_email)
         event = {"Records": [{"s3": {"bucket": {"name": BUCKET},
                                      "object": {"key": key.replace(" ", "+")}}}]}
-        self.handler.handler(event, None)
+        return self.handler.handler(event, None)[0]
 
     def keys(self, prefix):
         response = self.s3.list_objects_v2(Bucket=BUCKET, Prefix=prefix)
         return sorted(obj["Key"] for obj in response.get("Contents", []))
 
+    def read(self, key):
+        return self.s3.get_object(Bucket=BUCKET, Key=key)["Body"].read()
+
+    def assert_record_matches_its_xml(self, uuid=UUID):
+        """The DynamoDB record must always describe the exact XML it points to."""
+        item = self.table.get_item(Key={"uuid": uuid})["Item"]
+        xml = self.read(item["xml_key"])
+        self.assertEqual(hashlib.sha256(xml).hexdigest(), item["sha256"])
+        self.assertIn(f'Total="{item["total"]}"'.encode(), xml)
+        return item
+
     # --- happy path -------------------------------------------------------
 
     def test_valid_invoice_is_stored_and_registered(self):
-        self.deliver("emails/valid", make_email([xml_attachment(cfdi(), "Factura.XML")]))
+        content = cfdi()
+        summary = self.deliver("emails/valid", make_email([xml_attachment(content, "Factura.XML")]))
 
-        self.assertEqual(self.keys("invoices/pending/"), [f"invoices/pending/{UUID}.xml"])
-        item = self.table.get_item(Key={"uuid": UUID})["Item"]
+        self.assertEqual(summary["invoices"], [UUID])
+        self.assertEqual(self.keys("invoices/pending/"), [xml_key_for(content)])
+        item = self.assert_record_matches_its_xml()
         self.assertEqual(item["status"], "received")
         self.assertEqual(item["total"], "1160.00")
+        self.assertEqual(item["sha256"], hashlib.sha256(content).hexdigest())
 
     def test_url_encoded_key_is_decoded(self):
         self.deliver("emails/name with spaces", make_email([xml_attachment(cfdi())]))
+        self.assertEqual(len(self.keys("invoices/pending/")), 1)
+
+    def test_identical_resend_is_a_harmless_duplicate(self):
+        """The supplier sends the same file twice: nothing changes, one XML is kept."""
+        self.deliver("emails/first", make_email([xml_attachment(cfdi())]))
+        summary = self.deliver("emails/resend", make_email([xml_attachment(cfdi())]))
+
+        self.assertEqual(summary["duplicates"], [UUID])
+        self.assertEqual(summary["conflicts"], [])
         self.assertEqual(len(self.keys("invoices/pending/")), 1)
 
     # --- adversarial inputs ----------------------------------------------
@@ -120,14 +150,47 @@ class GatekeeperStressTest(unittest.TestCase):
         self.assertEqual(self.keys("invoices/pending/"), [])
         self.assertEqual(self.keys("non-invoices/"), ["non-invoices/injection"])
 
-    def test_forged_duplicate_cannot_overwrite_original(self):
-        """Same UUID, total changed from 1,160 to 99,999: the original must survive."""
-        self.deliver("emails/original", make_email([xml_attachment(cfdi())]))
-        self.deliver("emails/forged", make_email([xml_attachment(cfdi(total="99999.00"))]))
+    def test_forged_copy_with_same_uuid_is_a_conflict(self):
+        """Same UUID, total changed from 1,160 to 99,999: original untouched, forgery kept as evidence."""
+        original, forged = cfdi(), cfdi(total="99999.00")
+        self.deliver("emails/original", make_email([xml_attachment(original)]))
+        summary = self.deliver("emails/forged", make_email([xml_attachment(forged)]))
 
-        stored = self.s3.get_object(Bucket=BUCKET, Key=f"invoices/pending/{UUID}.xml")["Body"].read()
-        self.assertIn(b'Total="1160.00"', stored)
-        self.assertEqual(self.table.get_item(Key={"uuid": UUID})["Item"]["total"], "1160.00")
+        self.assertEqual(summary["conflicts"], [UUID])
+        self.assertEqual(self.keys("invoices/pending/"), sorted([xml_key_for(original), xml_key_for(forged)]))
+        item = self.assert_record_matches_its_xml()
+        self.assertEqual(item["total"], "1160.00")
+        self.assertEqual(item["xml_key"], xml_key_for(original))
+
+    def test_crash_between_s3_and_dynamodb_never_leaves_mismatched_data(self):
+        """The XML is stored, DynamoDB fails, and a forged copy arrives before the retry.
+
+        Before the fix, the record could say 99,999 while the stored XML said 1,160.
+        Now every record points to the exact XML its data came from.
+        """
+        original, forged = cfdi(), cfdi(total="99999.00")
+        throttled = ClientError({"Error": {"Code": "ProvisionedThroughputExceededException"}}, "PutItem")
+
+        # 1. Real invoice: XML stored, then DynamoDB fails -> the Lambda errors out
+        with mock.patch.object(self.handler.table, "put_item", side_effect=throttled):
+            with self.assertRaises(ClientError):
+                self.deliver("emails/original", make_email([xml_attachment(original)]))
+        self.assertEqual(self.keys("invoices/pending/"), [xml_key_for(original)])
+
+        # 2. Forged copy arrives before the retry
+        self.deliver("emails/forged", make_email([xml_attachment(forged)]))
+
+        # 3. AWS retries the real invoice
+        retry = self.handler.handler(
+            {"Records": [{"s3": {"bucket": {"name": BUCKET}, "object": {"key": "emails/original"}}}]}, None
+        )[0]
+
+        # The record and the XML it points to always agree
+        item = self.assert_record_matches_its_xml()
+        self.assertEqual(item["xml_key"], xml_key_for(forged))
+        self.assertEqual(retry["duplicates"] + retry["conflicts"], [UUID])
+        # Both files are kept, so the forgery can be investigated
+        self.assertEqual(len(self.keys(f"invoices/pending/{UUID}/")), 2)
 
     def test_billion_laughs_is_blocked(self):
         self.deliver("emails/bomb", make_email([xml_attachment(BILLION_LAUGHS)]))

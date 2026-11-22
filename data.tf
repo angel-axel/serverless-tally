@@ -93,7 +93,7 @@ data "aws_iam_policy_document" "gatekeeper_lambda_policy" {
     sid       = "RegisterInvoices"
     effect    = "Allow"
     actions   = ["dynamodb:PutItem"]
-    resources = [aws_dynamodb_table.dynamodb_table.arn]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.arn]
   }
 
   statement {
