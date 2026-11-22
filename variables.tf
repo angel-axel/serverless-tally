@@ -104,3 +104,54 @@ variable "gatekeeper_log_retention_days" {
   type        = number
   default     = 14
 }
+
+variable "agent_name" {
+  description = "Name of the invoice matcher agent, used to name its IAM role and policy (\"<agent_name>-role\", \"<agent_name>-permissions\"), like the Lambda functions. Must start with \"tally-\", the prefix the CodeBuild deployment policy allows for roles."
+  type        = string
+  default     = "tally-invoice-matcher"
+}
+
+variable "invoice_matcher_harness_name" {
+  description = "Name of the AgentCore harness that matches invoices against purchase orders. Letters, numbers and underscores only (no hyphens), up to 40 characters."
+  type        = string
+  default     = "tally_invoice_matcher"
+
+  validation {
+    condition     = can(regex("^[a-zA-Z][a-zA-Z0-9_]{0,39}$", var.invoice_matcher_harness_name))
+    error_message = "Use only letters, numbers and underscores, start with a letter, and keep it to 40 characters."
+  }
+}
+
+variable "invoice_matcher_model_name" {
+  description = "Bedrock model name for the invoice matcher agent, exactly as Bedrock lists it (for example \"Claude Sonnet 4.6\"). List the available names with: aws bedrock list-foundation-models --by-output-modality TEXT --query \"modelSummaries[].modelName\""
+  type        = string
+  nullable    = false
+
+  validation {
+    condition     = trimspace(var.invoice_matcher_model_name) != ""
+    error_message = "Set invoice_matcher_model_name to a Bedrock model name, for example \"Claude Sonnet 4.6\"."
+  }
+}
+
+variable "invoice_matcher_inference_profile_scope" {
+  description = "Geography of the system-defined cross-region inference profile used to call the model: \"global\" routes to any commercial region, \"us\" keeps requests in US regions, and so on. The profile ID is \"<scope>.<model ID>\"."
+  type        = string
+  default     = "global"
+
+  validation {
+    condition     = contains(["global", "us", "eu", "apac", "jp", "au", "ca", "us-gov"], var.invoice_matcher_inference_profile_scope)
+    error_message = "Use one of: global, us, eu, apac, jp, au, ca, us-gov."
+  }
+}
+
+variable "agent_max_iterations" {
+  description = "Maximum number of agent loop iterations per invoice. Caps cost and stops runaway tool loops."
+  type        = number
+  default     = 10
+}
+
+variable "agent_timeout_seconds" {
+  description = "Maximum duration in seconds of one agent run. When the dispatcher is added, its Lambda timeout is set to this value plus 60 seconds."
+  type        = number
+  default     = 120
+}

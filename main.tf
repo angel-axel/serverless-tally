@@ -22,6 +22,11 @@ locals {
   bucket = "${var.bucket_name}${local.s3_namespace_suffix}"
 
   domain = "${var.subdomain}.${var.domain}"
+
+  invoice_matcher_model_ids = distinct([
+    for model in data.aws_bedrock_foundation_models.text_models.model_summaries :
+    model.model_id if model.model_name == var.invoice_matcher_model_name && length(split(":", model.model_id)) <= 2
+  ])
 }
 
 resource "aws_s3_bucket" "spa_s3_bucket" {
@@ -324,4 +329,38 @@ resource "aws_s3_bucket_notification" "s3_bucket_notification" {
   }
 
   depends_on = [aws_lambda_permission.lambda_permission_gatekeeper_s3_invoke]
+}
+
+resource "aws_iam_role" "iam_role_invoice_matcher_agent" {
+  name               = "${var.agent_name}-role"
+  assume_role_policy = data.aws_iam_policy_document.invoice_matcher_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy" "iam_role_policy_invoice_matcher_agent" {
+  name   = "${var.agent_name}-permissions"
+  role   = aws_iam_role.iam_role_invoice_matcher_agent.id
+  policy = data.aws_iam_policy_document.invoice_matcher_agent_policy.json
+}
+
+resource "aws_bedrockagentcore_harness" "invoice_matcher_harness" {
+  harness_name       = var.invoice_matcher_harness_name
+  execution_role_arn = aws_iam_role.iam_role_invoice_matcher_agent.arn
+
+  system_prompt {
+    text = file("${path.module}/agents/invoice_matcher/instructions.md")
+  }
+
+  model {
+    bedrock_model_config {
+      model_id    = data.aws_bedrock_inference_profile.bedrock_inference_profile.inference_profile_id
+      temperature = 0
+    }
+  }
+
+  allowed_tools = ["todo_write"]
+
+  max_iterations  = var.agent_max_iterations
+  timeout_seconds = var.agent_timeout_seconds
+
+  depends_on = [aws_iam_role_policy.iam_role_policy_invoice_matcher_agent]
 }
