@@ -242,6 +242,31 @@ resource "aws_dynamodb_table" "invoices_dynamodb_table" {
   }
 }
 
+resource "aws_dynamodb_table" "purchase_orders_dynamodb_table" {
+  name         = var.purchase_orders_table_name
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "supplier_rfc"
+  range_key    = "order_id"
+
+  attribute {
+    name = "supplier_rfc"
+    type = "S"
+  }
+
+  attribute {
+    name = "order_id"
+    type = "S"
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+
+  server_side_encryption {
+    enabled = true
+  }
+}
+
 resource "aws_cloudwatch_log_group" "cloudwatch_log_group_gatekeeper_lambda" {
   name              = "/aws/lambda/${var.gatekeeper_function_name}"
   retention_in_days = var.gatekeeper_log_retention_days
@@ -299,9 +324,4 @@ resource "aws_s3_bucket_notification" "s3_bucket_notification" {
   }
 
   depends_on = [aws_lambda_permission.lambda_permission_gatekeeper_s3_invoke]
-}
-
-moved {
-  from = aws_dynamodb_table.dynamodb_table
-  to   = aws_dynamodb_table.invoices_dynamodb_table
 }

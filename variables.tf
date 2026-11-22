@@ -87,6 +87,12 @@ variable "invoices_table_name" {
   default     = "tally-invoices"
 }
 
+variable "purchase_orders_table_name" {
+  description = "Name of the DynamoDB table that stores the purchase orders sent to suppliers, used to match incoming invoices."
+  type        = string
+  default     = "tally-purchase-orders"
+}
+
 variable "gatekeeper_function_name" {
   description = "Name of the Lambda function that inspects inbound emails and extracts CFDI attachments."
   type        = string
