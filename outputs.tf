@@ -12,3 +12,8 @@ output "gatekeeper_function_name" {
   description = "Name of the gatekeeper Lambda function, useful to find its logs in CloudWatch."
   value       = aws_lambda_function.lambda_function_gatekeeper.function_name
 }
+
+output "dispatcher_function_name" {
+  description = "Name of the dispatcher Lambda function, useful to find its logs in CloudWatch."
+  value       = aws_lambda_function.lambda_function_dispatcher.function_name
+}

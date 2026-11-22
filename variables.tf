@@ -105,6 +105,18 @@ variable "gatekeeper_log_retention_days" {
   default     = 14
 }
 
+variable "dispatcher_function_name" {
+  description = "Name of the Lambda function that invokes the invoice-matching agent for every new invoice."
+  type        = string
+  default     = "tally-dispatcher"
+}
+
+variable "dispatcher_log_retention_days" {
+  description = "Days to keep the dispatcher Lambda logs in CloudWatch Logs."
+  type        = number
+  default     = 14
+}
+
 variable "agent_name" {
   description = "Name of the invoice matcher agent, used to name its IAM role and policy (\"<agent_name>-role\", \"<agent_name>-permissions\"), like the Lambda functions. Must start with \"tally-\", the prefix the CodeBuild deployment policy allows for roles."
   type        = string

@@ -233,6 +233,9 @@ resource "aws_dynamodb_table" "invoices_dynamodb_table" {
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "uuid"
 
+  stream_enabled   = true
+  stream_view_type = "NEW_IMAGE"
+
   attribute {
     name = "uuid"
     type = "S"
@@ -329,6 +332,72 @@ resource "aws_s3_bucket_notification" "s3_bucket_notification" {
   }
 
   depends_on = [aws_lambda_permission.lambda_permission_gatekeeper_s3_invoke]
+}
+
+resource "aws_cloudwatch_log_group" "cloudwatch_log_group_dispatcher_lambda" {
+  name              = "/aws/lambda/${var.dispatcher_function_name}"
+  retention_in_days = var.dispatcher_log_retention_days
+}
+
+resource "aws_iam_role" "iam_role_dispatcher_lambda" {
+  name               = "${var.dispatcher_function_name}-role"
+  assume_role_policy = data.aws_iam_policy_document.dispatcher_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy" "iam_role_policy_dispatcher_lambda" {
+  name   = "${var.dispatcher_function_name}-permissions"
+  role   = aws_iam_role.iam_role_dispatcher_lambda.id
+  policy = data.aws_iam_policy_document.dispatcher_lambda_policy.json
+}
+
+resource "aws_lambda_function" "lambda_function_dispatcher" {
+  function_name    = var.dispatcher_function_name
+  role             = aws_iam_role.iam_role_dispatcher_lambda.arn
+  runtime          = "python3.13"
+  handler          = "handler.handler"
+  filename         = data.archive_file.dispatcher_lambda_code.output_path
+  source_code_hash = data.archive_file.dispatcher_lambda_code.output_base64sha256
+  memory_size      = 256
+
+  timeout = var.agent_timeout_seconds + 60
+
+  environment {
+    variables = {
+      HARNESS_ARN           = aws_bedrockagentcore_harness.invoice_matcher_harness.arn
+      AGENT_MAX_ITERATIONS  = tostring(var.agent_max_iterations)
+      AGENT_TIMEOUT_SECONDS = tostring(var.agent_timeout_seconds)
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.cloudwatch_log_group_dispatcher_lambda,
+    aws_iam_role_policy.iam_role_policy_dispatcher_lambda,
+  ]
+}
+
+resource "aws_lambda_event_source_mapping" "invoices_stream_to_dispatcher" {
+  event_source_arn  = aws_dynamodb_table.invoices_dynamodb_table.stream_arn
+  function_name     = aws_lambda_function.lambda_function_dispatcher.arn
+  starting_position = "LATEST"
+
+  batch_size = 1
+
+  maximum_retry_attempts         = 2
+  maximum_record_age_in_seconds  = 3600
+  bisect_batch_on_function_error = false
+
+  filter_criteria {
+    filter {
+      pattern = jsonencode({
+        eventName = ["INSERT"]
+        dynamodb = {
+          NewImage = {
+            status = { S = ["received"] }
+          }
+        }
+      })
+    }
+  }
 }
 
 resource "aws_iam_role" "iam_role_invoice_matcher_agent" {

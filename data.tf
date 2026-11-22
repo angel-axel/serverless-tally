@@ -104,6 +104,85 @@ data "aws_iam_policy_document" "gatekeeper_lambda_policy" {
   }
 }
 
+data "archive_file" "gatekeeper_lambda_code" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambdas/gatekeeper"
+  output_path = "${path.module}/dist/lambdas/gatekeeper.zip"
+
+  excludes = [
+    "__pycache__",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "tests",
+    "tests/**",
+    "README.md",
+  ]
+}
+
+data "aws_iam_policy_document" "dispatcher_assume_role_policy" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "dispatcher_lambda_policy" {
+  statement {
+    sid    = "ReadInvoicesStream"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+    ]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.stream_arn]
+  }
+
+  statement {
+    sid       = "ListStreams"
+    effect    = "Allow"
+    actions   = ["dynamodb:ListStreams"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid    = "InvokeInvoiceMatcherAgent"
+    effect = "Allow"
+    actions = [
+      "bedrock-agentcore:InvokeHarness",
+      "bedrock-agentcore:InvokeAgentRuntime",
+    ]
+    resources = [aws_bedrockagentcore_harness.invoice_matcher_harness.arn]
+  }
+
+  statement {
+    sid       = "WriteLogs"
+    effect    = "Allow"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.cloudwatch_log_group_dispatcher_lambda.arn}:*"]
+  }
+}
+
+data "archive_file" "dispatcher_lambda_code" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambdas/dispatcher"
+  output_path = "${path.module}/dist/lambdas/dispatcher.zip"
+
+  excludes = [
+    "__pycache__",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "tests",
+    "tests/**",
+    "README.md",
+  ]
+}
+
 data "aws_bedrock_foundation_models" "text_models" {
   by_output_modality = "TEXT"
 }
@@ -233,19 +312,4 @@ data "aws_iam_policy_document" "invoice_matcher_agent_policy" {
 
 data "aws_route53_zone" "route53_zone" {
   name = var.domain
-}
-
-data "archive_file" "gatekeeper_lambda_code" {
-  type        = "zip"
-  source_dir  = "${path.module}/lambdas/gatekeeper"
-  output_path = "${path.module}/dist/lambdas/gatekeeper.zip"
-
-  excludes = [
-    "__pycache__",
-    "**/__pycache__/**",
-    "**/*.pyc",
-    "tests",
-    "tests/**",
-    "README.md",
-  ]
 }
