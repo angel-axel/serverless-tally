@@ -308,6 +308,13 @@ data "aws_iam_policy_document" "invoice_matcher_agent_policy" {
     ]
     resources = ["arn:aws:bedrock-agentcore:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:memory/harness_*"]
   }
+
+  statement {
+    sid       = "ApplyGuardrail"
+    effect    = "Allow"
+    actions   = ["bedrock:ApplyGuardrail"]
+    resources = [aws_bedrock_guardrail.invoice_matcher_guardrail.guardrail_arn]
+  }
 }
 
 data "aws_route53_zone" "route53_zone" {
