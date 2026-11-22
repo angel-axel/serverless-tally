@@ -104,6 +104,211 @@ data "aws_iam_policy_document" "gatekeeper_lambda_policy" {
   }
 }
 
+data "aws_iam_policy_document" "lambda_assume_role_policy" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "read_invoice_lambda_policy" {
+  statement {
+    sid       = "ReadInvoiceRecord"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.arn]
+  }
+
+  statement {
+    sid       = "ReadInvoiceXml"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.s3_bucket.arn}/invoices/pending/*"]
+  }
+
+  statement {
+    sid       = "WriteLogs"
+    effect    = "Allow"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.cloudwatch_log_group_read_invoice_lambda.arn}:*"]
+  }
+}
+
+data "aws_iam_policy_document" "find_open_orders_lambda_policy" {
+  statement {
+    sid       = "ReadInvoiceSupplier"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["uuid", "issuer_rfc", "status"]
+    }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "dynamodb:Select"
+      values   = ["SPECIFIC_ATTRIBUTES"]
+    }
+  }
+
+  statement {
+    sid       = "QueryPurchaseOrders"
+    effect    = "Allow"
+    actions   = ["dynamodb:Query"]
+    resources = [aws_dynamodb_table.purchase_orders_dynamodb_table.arn]
+  }
+
+  statement {
+    sid       = "WriteLogs"
+    effect    = "Allow"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.cloudwatch_log_group_find_open_orders_lambda.arn}:*"]
+  }
+}
+
+data "aws_iam_policy_document" "propose_match_lambda_policy" {
+  statement {
+    sid       = "ReadInvoiceRecord"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.arn]
+  }
+
+  statement {
+    sid       = "RecordMatchProposal"
+    effect    = "Allow"
+    actions   = ["dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["uuid", "status", "match_proposal", "proposed_at"]
+    }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "dynamodb:ReturnValues"
+      values   = ["NONE", "UPDATED_OLD", "UPDATED_NEW"]
+    }
+  }
+
+  statement {
+    sid       = "ReadInvoiceXml"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.s3_bucket.arn}/invoices/pending/*"]
+  }
+
+  statement {
+    sid       = "ReadPurchaseOrders"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem", "dynamodb:Query"]
+    resources = [aws_dynamodb_table.purchase_orders_dynamodb_table.arn]
+  }
+
+  statement {
+    sid       = "WriteLogs"
+    effect    = "Allow"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.cloudwatch_log_group_propose_match_lambda.arn}:*"]
+  }
+}
+
+data "aws_iam_policy_document" "decision_lambda_policy" {
+  statement {
+    sid    = "ReadInvoicesStream"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+    ]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.stream_arn]
+  }
+
+  statement {
+    sid       = "ListStreams"
+    effect    = "Allow"
+    actions   = ["dynamodb:ListStreams"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "ReadInvoiceRecord"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.arn]
+  }
+
+  statement {
+    sid       = "RecordDecision"
+    effect    = "Allow"
+    actions   = ["dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["uuid", "status", "decision_reasons", "decided_at"]
+    }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "dynamodb:ReturnValues"
+      values   = ["NONE", "UPDATED_OLD", "UPDATED_NEW"]
+    }
+  }
+
+  statement {
+    sid       = "ReadInvoiceXml"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.s3_bucket.arn}/invoices/pending/*"]
+  }
+
+  statement {
+    sid       = "ReadPurchaseOrders"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.purchase_orders_dynamodb_table.arn]
+  }
+
+  statement {
+    sid       = "RecordInvoicedQuantities"
+    effect    = "Allow"
+    actions   = ["dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.purchase_orders_dynamodb_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["supplier_rfc", "order_id", "invoiced_quantities", "status"]
+    }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "dynamodb:ReturnValues"
+      values   = ["NONE", "UPDATED_OLD", "UPDATED_NEW"]
+    }
+  }
+
+  statement {
+    sid       = "WriteLogs"
+    effect    = "Allow"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.cloudwatch_log_group_decision_lambda.arn}:*"]
+  }
+}
+
 data "archive_file" "gatekeeper_lambda_code" {
   type        = "zip"
   source_dir  = "${path.module}/lambdas/gatekeeper"
@@ -172,6 +377,66 @@ data "archive_file" "dispatcher_lambda_code" {
   type        = "zip"
   source_dir  = "${path.module}/lambdas/dispatcher"
   output_path = "${path.module}/dist/lambdas/dispatcher.zip"
+
+  excludes = [
+    "__pycache__",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "tests",
+    "tests/**",
+    "README.md",
+  ]
+}
+
+data "archive_file" "read_invoice_lambda_code" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambdas/read_invoice"
+  output_path = "${path.module}/dist/lambdas/read_invoice.zip"
+
+  excludes = [
+    "__pycache__",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "tests",
+    "tests/**",
+    "README.md",
+  ]
+}
+
+data "archive_file" "find_open_orders_lambda_code" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambdas/find_open_orders"
+  output_path = "${path.module}/dist/lambdas/find_open_orders.zip"
+
+  excludes = [
+    "__pycache__",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "tests",
+    "tests/**",
+    "README.md",
+  ]
+}
+
+data "archive_file" "propose_match_lambda_code" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambdas/propose_match"
+  output_path = "${path.module}/dist/lambdas/propose_match.zip"
+
+  excludes = [
+    "__pycache__",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "tests",
+    "tests/**",
+    "README.md",
+  ]
+}
+
+data "archive_file" "decision_lambda_code" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambdas/decision"
+  output_path = "${path.module}/dist/lambdas/decision.zip"
 
   excludes = [
     "__pycache__",

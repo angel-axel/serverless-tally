@@ -400,6 +400,190 @@ resource "aws_lambda_event_source_mapping" "invoices_stream_to_dispatcher" {
   }
 }
 
+resource "aws_cloudwatch_log_group" "cloudwatch_log_group_read_invoice_lambda" {
+  name              = "/aws/lambda/${var.read_invoice_function_name}"
+  retention_in_days = var.tools_log_retention_days
+}
+
+resource "aws_iam_role" "iam_role_read_invoice_lambda" {
+  name               = "${var.read_invoice_function_name}-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy" "iam_role_policy_read_invoice_lambda" {
+  name   = "${var.read_invoice_function_name}-permissions"
+  role   = aws_iam_role.iam_role_read_invoice_lambda.id
+  policy = data.aws_iam_policy_document.read_invoice_lambda_policy.json
+}
+
+resource "aws_lambda_function" "lambda_function_read_invoice" {
+  function_name    = var.read_invoice_function_name
+  role             = aws_iam_role.iam_role_read_invoice_lambda.arn
+  runtime          = "python3.13"
+  handler          = "handler.handler"
+  filename         = data.archive_file.read_invoice_lambda_code.output_path
+  source_code_hash = data.archive_file.read_invoice_lambda_code.output_base64sha256
+  memory_size      = 256
+  timeout          = 15
+
+  environment {
+    variables = {
+      INVOICES_TABLE = aws_dynamodb_table.invoices_dynamodb_table.name
+      BUCKET         = aws_s3_bucket.s3_bucket.id
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.cloudwatch_log_group_read_invoice_lambda,
+    aws_iam_role_policy.iam_role_policy_read_invoice_lambda,
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "cloudwatch_log_group_find_open_orders_lambda" {
+  name              = "/aws/lambda/${var.find_open_orders_function_name}"
+  retention_in_days = var.tools_log_retention_days
+}
+
+resource "aws_iam_role" "iam_role_find_open_orders_lambda" {
+  name               = "${var.find_open_orders_function_name}-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy" "iam_role_policy_find_open_orders_lambda" {
+  name   = "${var.find_open_orders_function_name}-permissions"
+  role   = aws_iam_role.iam_role_find_open_orders_lambda.id
+  policy = data.aws_iam_policy_document.find_open_orders_lambda_policy.json
+}
+
+resource "aws_lambda_function" "lambda_function_find_open_orders" {
+  function_name    = var.find_open_orders_function_name
+  role             = aws_iam_role.iam_role_find_open_orders_lambda.arn
+  runtime          = "python3.13"
+  handler          = "handler.handler"
+  filename         = data.archive_file.find_open_orders_lambda_code.output_path
+  source_code_hash = data.archive_file.find_open_orders_lambda_code.output_base64sha256
+  memory_size      = 256
+  timeout          = 15
+
+  environment {
+    variables = {
+      INVOICES_TABLE        = aws_dynamodb_table.invoices_dynamodb_table.name
+      PURCHASE_ORDERS_TABLE = aws_dynamodb_table.purchase_orders_dynamodb_table.name
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.cloudwatch_log_group_find_open_orders_lambda,
+    aws_iam_role_policy.iam_role_policy_find_open_orders_lambda,
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "cloudwatch_log_group_propose_match_lambda" {
+  name              = "/aws/lambda/${var.propose_match_function_name}"
+  retention_in_days = var.tools_log_retention_days
+}
+
+resource "aws_iam_role" "iam_role_propose_match_lambda" {
+  name               = "${var.propose_match_function_name}-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy" "iam_role_policy_propose_match_lambda" {
+  name   = "${var.propose_match_function_name}-permissions"
+  role   = aws_iam_role.iam_role_propose_match_lambda.id
+  policy = data.aws_iam_policy_document.propose_match_lambda_policy.json
+}
+
+resource "aws_lambda_function" "lambda_function_propose_match" {
+  function_name    = var.propose_match_function_name
+  role             = aws_iam_role.iam_role_propose_match_lambda.arn
+  runtime          = "python3.13"
+  handler          = "handler.handler"
+  filename         = data.archive_file.propose_match_lambda_code.output_path
+  source_code_hash = data.archive_file.propose_match_lambda_code.output_base64sha256
+  memory_size      = 256
+  timeout          = 15
+
+  environment {
+    variables = {
+      INVOICES_TABLE        = aws_dynamodb_table.invoices_dynamodb_table.name
+      PURCHASE_ORDERS_TABLE = aws_dynamodb_table.purchase_orders_dynamodb_table.name
+      BUCKET                = aws_s3_bucket.s3_bucket.id
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.cloudwatch_log_group_propose_match_lambda,
+    aws_iam_role_policy.iam_role_policy_propose_match_lambda,
+  ]
+}
+
+resource "aws_cloudwatch_log_group" "cloudwatch_log_group_decision_lambda" {
+  name              = "/aws/lambda/${var.decision_function_name}"
+  retention_in_days = var.decision_log_retention_days
+}
+
+resource "aws_iam_role" "iam_role_decision_lambda" {
+  name               = "${var.decision_function_name}-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy" "iam_role_policy_decision_lambda" {
+  name   = "${var.decision_function_name}-permissions"
+  role   = aws_iam_role.iam_role_decision_lambda.id
+  policy = data.aws_iam_policy_document.decision_lambda_policy.json
+}
+
+resource "aws_lambda_function" "lambda_function_decision" {
+  function_name    = var.decision_function_name
+  role             = aws_iam_role.iam_role_decision_lambda.arn
+  runtime          = "python3.13"
+  handler          = "handler.handler"
+  filename         = data.archive_file.decision_lambda_code.output_path
+  source_code_hash = data.archive_file.decision_lambda_code.output_base64sha256
+  memory_size      = 256
+  timeout          = 30
+
+  environment {
+    variables = {
+      INVOICES_TABLE        = aws_dynamodb_table.invoices_dynamodb_table.name
+      PURCHASE_ORDERS_TABLE = aws_dynamodb_table.purchase_orders_dynamodb_table.name
+      BUCKET                = aws_s3_bucket.s3_bucket.id
+      PRICE_TOLERANCE       = var.decision_price_tolerance
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.cloudwatch_log_group_decision_lambda,
+    aws_iam_role_policy.iam_role_policy_decision_lambda,
+  ]
+}
+
+resource "aws_lambda_event_source_mapping" "invoices_stream_to_decision" {
+  event_source_arn  = aws_dynamodb_table.invoices_dynamodb_table.stream_arn
+  function_name     = aws_lambda_function.lambda_function_decision.arn
+  starting_position = "LATEST"
+
+  batch_size = 1
+
+  maximum_retry_attempts         = 2
+  maximum_record_age_in_seconds  = 3600
+  bisect_batch_on_function_error = false
+
+  filter_criteria {
+    filter {
+      pattern = jsonencode({
+        eventName = ["MODIFY"]
+        dynamodb = {
+          NewImage = {
+            status = { S = ["match_proposed"] }
+          }
+        }
+      })
+    }
+  }
+}
+
 resource "aws_iam_role" "iam_role_invoice_matcher_agent" {
   name               = "${var.agent_name}-role"
   assume_role_policy = data.aws_iam_policy_document.invoice_matcher_assume_role_policy.json

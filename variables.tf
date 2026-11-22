@@ -117,6 +117,53 @@ variable "dispatcher_log_retention_days" {
   default     = 14
 }
 
+variable "read_invoice_function_name" {
+  description = "Name of the Lambda function behind the agent's read_invoice tool."
+  type        = string
+  default     = "tally-read-invoice"
+}
+
+variable "find_open_orders_function_name" {
+  description = "Name of the Lambda function behind the agent's find_open_orders tool."
+  type        = string
+  default     = "tally-find-open-orders"
+}
+
+variable "propose_match_function_name" {
+  description = "Name of the Lambda function behind the agent's propose_match tool."
+  type        = string
+  default     = "tally-propose-match"
+}
+
+variable "tools_log_retention_days" {
+  description = "Days to keep the logs of the agent tool Lambdas in CloudWatch Logs."
+  type        = number
+  default     = 14
+}
+
+variable "decision_function_name" {
+  description = "Name of the Lambda function that checks the agent's proposal and decides whether the invoice matches its purchase order."
+  type        = string
+  default     = "tally-decision"
+}
+
+variable "decision_log_retention_days" {
+  description = "Days to keep the decision Lambda logs in CloudWatch Logs."
+  type        = number
+  default     = 14
+}
+
+variable "decision_price_tolerance" {
+  description = "Maximum difference, in the invoice currency, allowed between the invoiced unit price and the purchase order unit price (for rounding). Use \"0\" for an exact match."
+  type        = string
+  default     = "0.01"
+
+  validation {
+    condition     = can(regex("^[0-9]+(\\.[0-9]{1,2})?$", var.decision_price_tolerance))
+    error_message = "Use a non-negative amount with up to two decimals, for example \"0.01\"."
+  }
+}
+
 variable "agent_name" {
   description = "Name of the invoice matcher agent, used to name its IAM role and policy (\"<agent_name>-role\", \"<agent_name>-permissions\"), like the Lambda functions. Must start with \"tally-\", the prefix the CodeBuild deployment policy allows for roles."
   type        = string
