@@ -225,3 +225,14 @@ variable "agent_timeout_seconds" {
   type        = number
   default     = 120
 }
+
+variable "tools_gateway_name" {
+  description = "Name of the AgentCore Gateway that exposes the agent's tools, also used to name its IAM role and policy. Must start with \"tally-\", the prefix the CodeBuild deployment policy allows for roles and gateways."
+  type        = string
+  default     = "tally-tools"
+
+  validation {
+    condition     = can(regex("^tally-[a-z0-9-]{1,40}$", var.tools_gateway_name))
+    error_message = "Use \"tally-\" followed by lowercase letters, numbers or hyphens."
+  }
+}

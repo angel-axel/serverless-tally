@@ -580,6 +580,44 @@ data "aws_iam_policy_document" "invoice_matcher_agent_policy" {
     actions   = ["bedrock:ApplyGuardrail"]
     resources = [aws_bedrock_guardrail.invoice_matcher_guardrail.guardrail_arn]
   }
+
+  statement {
+    sid       = "InvokeToolsGateway"
+    effect    = "Allow"
+    actions   = ["bedrock-agentcore:InvokeGateway"]
+    resources = [aws_bedrockagentcore_gateway.tools_gateway.gateway_arn]
+  }
+}
+
+data "aws_iam_policy_document" "tools_gateway_assume_role_policy" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["bedrock-agentcore.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.caller_identity.account_id]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "tools_gateway_policy" {
+  statement {
+    sid     = "InvokeToolLambdas"
+    effect  = "Allow"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      aws_lambda_function.lambda_function_read_invoice.arn,
+      aws_lambda_function.lambda_function_find_open_orders.arn,
+      aws_lambda_function.lambda_function_propose_match.arn,
+    ]
+  }
 }
 
 data "aws_route53_zone" "route53_zone" {
