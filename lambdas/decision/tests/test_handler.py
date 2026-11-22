@@ -22,6 +22,7 @@ os.environ.update(
     PURCHASE_ORDERS_TABLE="test-purchase-orders",
     BUCKET="test-bucket",
     PRICE_TOLERANCE="0.01",
+    MAX_AUTO_MATCH_TOTAL="50000",
 )
 
 import boto3  # noqa: E402
@@ -195,6 +196,16 @@ class DecisionTest(unittest.TestCase):
         self.put_order(status="closed")
         self.propose(cfdi())
         self.assert_review(self.decide(), "no longer open")
+
+    def test_large_invoice_always_goes_to_review(self):
+        with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1000")):
+            self.propose(cfdi())  # total 1856.00, everything else matches
+            self.assert_review(self.decide(), "above the automatic matching limit 1000")
+
+    def test_invoice_at_the_limit_matches(self):
+        with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1856.00")):
+            self.propose(cfdi())
+            self.assertEqual(self.decide()["result"], "matched")
 
     def test_all_reasons_are_reported_together(self):
         self.propose(cfdi(oil=("12", "210.00", "2520.00")))

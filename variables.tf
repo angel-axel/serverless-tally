@@ -164,6 +164,17 @@ variable "decision_price_tolerance" {
   }
 }
 
+variable "decision_max_auto_match_total" {
+  description = "Invoices with a total above this amount always go to needs_review, even when every check passes."
+  type        = string
+  default     = "50000"
+
+  validation {
+    condition     = can(regex("^[0-9]+(\\.[0-9]{1,2})?$", var.decision_max_auto_match_total))
+    error_message = "Use a non-negative amount with up to two decimals, for example \"50000\"."
+  }
+}
+
 variable "agent_name" {
   description = "Name of the invoice matcher agent, used to name its IAM role and policy (\"<agent_name>-role\", \"<agent_name>-permissions\"), like the Lambda functions. Must start with \"tally-\", the prefix the CodeBuild deployment policy allows for roles."
   type        = string

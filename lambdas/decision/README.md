@@ -8,6 +8,7 @@ Deterministic check of the agent's proposal. When an invoice moves to `match_pro
 |---|---|
 | The code decides, not the agent | The agent's proposal only says which line goes with which; every number is read again from the stored XML and the order |
 | Only income invoices match automatically | `TipoDeComprobante` must be `I`; credit notes and others go to review |
+| Large invoices need a person | Total above `MAX_AUTO_MATCH_TOTAL` (default 50,000) goes to review even if everything else matches |
 | Prices agree with the order | Unit price within `PRICE_TOLERANCE` (default 0.01) of the agreed price |
 | No more than what was ordered | Invoiced quantity ≤ ordered − already invoiced, per line |
 | The invoice adds up | `Importe = Cantidad × ValorUnitario`; `SubTotal = Σ Importe`; `Total = SubTotal − Descuento + Traslados − Retenciones` (one-cent rounding) |
@@ -54,6 +55,7 @@ Output, one JSON log line per record:
 | `PURCHASE_ORDERS_TABLE` | Purchase orders table name |
 | `BUCKET` | Inbound bucket name |
 | `PRICE_TOLERANCE` | Allowed unit price difference, default `0.01` |
+| `MAX_AUTO_MATCH_TOTAL` | Highest invoice total matched without a person, default `50000` |
 
 ## Tests
 
@@ -62,7 +64,7 @@ pip install -r lambdas/decision/tests/requirements.txt
 python -m unittest discover -s lambdas/decision/tests -v
 ```
 
-22 tests (moto): matching invoice recorded on the order; order closed when fully invoiced; rounding within tolerance; review for price above agreed, quantity above pending, line amount, total, unmatched line, no order, credit note, currency, closed order; all reasons reported together; a wrong pairing by the agent is caught; the same order cannot be invoiced twice; an order changed mid-decision is retried (with and without existing quantities) and then reviewed; a retry after a decision changes nothing; other stream events ignored; XML of another invoice; unreadable XML; shared `cfdi.py` identical. All pass.
+24 tests (moto): matching invoice recorded on the order; order closed when fully invoiced; rounding within tolerance; a total above the automatic limit goes to review and one at the limit matches; review for price above agreed, quantity above pending, line amount, total, unmatched line, no order, credit note, currency, closed order; all reasons reported together; a wrong pairing by the agent is caught; the same order cannot be invoiced twice; an order changed mid-decision is retried (with and without existing quantities) and then reviewed; a retry after a decision changes nothing; other stream events ignored; XML of another invoice; unreadable XML; shared `cfdi.py` identical. All pass.
 
 ## Design decisions
 

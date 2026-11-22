@@ -550,6 +550,7 @@ resource "aws_lambda_function" "lambda_function_decision" {
       PURCHASE_ORDERS_TABLE = aws_dynamodb_table.purchase_orders_dynamodb_table.name
       BUCKET                = aws_s3_bucket.s3_bucket.id
       PRICE_TOLERANCE       = var.decision_price_tolerance
+      MAX_AUTO_MATCH_TOTAL  = var.decision_max_auto_match_total
     }
   }
 
