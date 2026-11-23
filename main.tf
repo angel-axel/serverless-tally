@@ -834,3 +834,14 @@ resource "aws_bedrockagentcore_harness" "invoice_matcher_harness" {
     aws_bedrockagentcore_gateway_target.propose_match_target,
   ]
 }
+
+resource "aws_cloudwatch_log_resource_policy" "xray_transaction_search_log_resource_policy" {
+  policy_name     = "tally-xray-transaction-search"
+  policy_document = data.aws_iam_policy_document.xray_transaction_search_policy.json
+}
+
+resource "aws_xray_trace_segment_destination" "xray_trace_segment_destination" {
+  destination = "CloudWatchLogs"
+
+  depends_on = [aws_cloudwatch_log_resource_policy.xray_transaction_search_log_resource_policy]
+}

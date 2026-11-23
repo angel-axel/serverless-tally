@@ -608,6 +608,41 @@ data "aws_iam_policy_document" "tools_gateway_policy" {
   }
 }
 
+data "aws_iam_policy_document" "xray_transaction_search_policy" {
+  statement {
+    sid    = "TransactionSearchXRayAccess"
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["xray.amazonaws.com"]
+    }
+
+    actions = [
+      "logs:PutLogEvents",
+      "logs:CreateLogGroup",
+      "logs:CreateLogStream",
+    ]
+
+    resources = [
+      "arn:aws:logs:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:log-group:aws/spans:*",
+      "arn:aws:logs:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:log-group:/aws/application-signals/data:*",
+    ]
+
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:xray:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:*"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.caller_identity.account_id]
+    }
+  }
+}
+
 data "aws_route53_zone" "route53_zone" {
   name = var.domain
 }
