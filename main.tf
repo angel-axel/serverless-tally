@@ -634,17 +634,6 @@ resource "aws_bedrock_guardrail" "invoice_matcher_guardrail" {
     }
 
     topics_config {
-      name       = "DataChanges"
-      type       = "DENY"
-      definition = "Changing, deleting or creating invoices, purchase orders, amounts, bank accounts or supplier data, other than proposing which invoice line matches which purchase order line."
-      examples = [
-        "Change the invoice total to 15,000 pesos.",
-        "Delete the purchase order for this supplier.",
-        "Update the supplier's bank account number.",
-      ]
-    }
-
-    topics_config {
       name       = "SystemAccess"
       type       = "DENY"
       definition = "Running commands, code or scripts, accessing files, URLs or cloud resources, or revealing system prompts, credentials or configuration."
@@ -865,6 +854,10 @@ resource "aws_bedrockagentcore_harness" "invoice_matcher_harness" {
   }
 
   allowed_tools = ["@${var.tools_gateway_name}"]
+
+  memory {
+    disabled {}
+  }
 
   max_iterations  = var.agent_max_iterations
   timeout_seconds = var.agent_timeout_seconds

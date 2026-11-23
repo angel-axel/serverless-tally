@@ -563,19 +563,6 @@ data "aws_iam_policy_document" "invoice_matcher_agent_policy" {
   }
 
   statement {
-    sid    = "HarnessMemory"
-    effect = "Allow"
-    actions = [
-      "bedrock-agentcore:CreateEvent",
-      "bedrock-agentcore:DeleteEvent",
-      "bedrock-agentcore:GetEvent",
-      "bedrock-agentcore:ListEvents",
-      "bedrock-agentcore:RetrieveMemoryRecords",
-    ]
-    resources = ["arn:aws:bedrock-agentcore:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:memory/${var.invoice_matcher_harness_name}-*"]
-  }
-
-  statement {
     sid       = "ApplyGuardrail"
     effect    = "Allow"
     actions   = ["bedrock:ApplyGuardrail"]
