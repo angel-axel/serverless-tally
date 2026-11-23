@@ -604,7 +604,7 @@ resource "aws_iam_role_policy" "iam_role_policy_invoice_matcher_agent" {
 
 resource "aws_bedrock_guardrail" "invoice_matcher_guardrail" {
   name                      = "${var.agent_name}-guardrail"
-  description               = "Blocks prompt attacks in the input of the invoice matcher agent."
+  description               = "Screens the supplier text of incoming invoices for prompt attacks."
   blocked_input_messaging   = "Blocked by the guardrail: the input looks like a prompt attack."
   blocked_outputs_messaging = "Blocked by the guardrail."
 
@@ -802,14 +802,6 @@ resource "aws_bedrockagentcore_harness" "invoice_matcher_harness" {
       model_id    = data.aws_bedrock_inference_profile.bedrock_inference_profile.inference_profile_id
       temperature = 0
       api_format  = "converse_stream"
-
-      additional_params = jsonencode({
-        guardrailConfig = {
-          guardrailIdentifier = aws_bedrock_guardrail.invoice_matcher_guardrail.guardrail_id
-          guardrailVersion    = aws_bedrock_guardrail_version.invoice_matcher_guardrail_version.version
-          trace               = "enabled"
-        }
-      })
     }
   }
 

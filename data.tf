@@ -580,13 +580,6 @@ data "aws_iam_policy_document" "invoice_matcher_agent_policy" {
   }
 
   statement {
-    sid       = "ApplyGuardrail"
-    effect    = "Allow"
-    actions   = ["bedrock:ApplyGuardrail"]
-    resources = [aws_bedrock_guardrail.invoice_matcher_guardrail.guardrail_arn]
-  }
-
-  statement {
     sid    = "DeliverSpansToAgentLogGroup"
     effect = "Allow"
     actions = [
