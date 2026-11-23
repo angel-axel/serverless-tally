@@ -557,6 +557,7 @@ data "aws_iam_policy_document" "invoice_matcher_agent_policy" {
     ]
     resources = [
       "arn:aws:bedrock-agentcore:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:workload-identity-directory/default",
+      "arn:aws:bedrock-agentcore:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:workload-identity-directory/default/workload-identity/${var.invoice_matcher_harness_name}-*",
       "arn:aws:bedrock-agentcore:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:workload-identity-directory/default/workload-identity/harness_${var.invoice_matcher_harness_name}-*",
     ]
   }
@@ -571,7 +572,7 @@ data "aws_iam_policy_document" "invoice_matcher_agent_policy" {
       "bedrock-agentcore:ListEvents",
       "bedrock-agentcore:RetrieveMemoryRecords",
     ]
-    resources = ["arn:aws:bedrock-agentcore:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:memory/harness_*"]
+    resources = ["arn:aws:bedrock-agentcore:${data.aws_region.region.region}:${data.aws_caller_identity.caller_identity.account_id}:memory/${var.invoice_matcher_harness_name}-*"]
   }
 
   statement {
