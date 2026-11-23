@@ -570,6 +570,16 @@ data "aws_iam_policy_document" "invoice_matcher_agent_policy" {
   }
 
   statement {
+    sid    = "DeliverSpansToAgentLogGroup"
+    effect = "Allow"
+    actions = [
+      "logs:PutResourcePolicy",
+      "logs:DescribeResourcePolicies",
+    ]
+    resources = ["*"]
+  }
+
+  statement {
     sid       = "InvokeToolsGateway"
     effect    = "Allow"
     actions   = ["bedrock-agentcore:InvokeGateway"]
