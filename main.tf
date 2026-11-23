@@ -303,7 +303,9 @@ resource "aws_lambda_function" "lambda_function_gatekeeper" {
 
   environment {
     variables = {
-      INVOICES_TABLE = aws_dynamodb_table.invoices_dynamodb_table.name
+      INVOICES_TABLE    = aws_dynamodb_table.invoices_dynamodb_table.name
+      GUARDRAIL_ID      = aws_bedrock_guardrail.invoice_matcher_guardrail.guardrail_id
+      GUARDRAIL_VERSION = aws_bedrock_guardrail_version.invoice_matcher_guardrail_version.version
     }
   }
 
@@ -432,10 +434,8 @@ resource "aws_lambda_function" "lambda_function_read_invoice" {
 
   environment {
     variables = {
-      INVOICES_TABLE    = aws_dynamodb_table.invoices_dynamodb_table.name
-      BUCKET            = aws_s3_bucket.s3_bucket.id
-      GUARDRAIL_ID      = aws_bedrock_guardrail.invoice_matcher_guardrail.guardrail_id
-      GUARDRAIL_VERSION = aws_bedrock_guardrail_version.invoice_matcher_guardrail_version.version
+      INVOICES_TABLE = aws_dynamodb_table.invoices_dynamodb_table.name
+      BUCKET         = aws_s3_bucket.s3_bucket.id
     }
   }
 

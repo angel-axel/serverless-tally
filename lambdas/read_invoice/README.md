@@ -66,3 +66,4 @@ python -m unittest discover -s lambdas/read_invoice/tests -v
 ## Known limitations
 
 - The tool cannot tell whether the agent is asking for the invoice it was given. It limits the damage instead: only invoices in `received` can be read, and nothing can be changed.
+- Supplier text is screened by the guardrail in the gatekeeper, before the invoice is registered; see `lambdas/gatekeeper/README.md`.

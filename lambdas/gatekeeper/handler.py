@@ -9,11 +9,16 @@ What it does:
   any downstream component, including the AI agent.
 - Sends emails that SES flagged as spam or virus to ``quarantine/``.
 - Stores every attachment that is a stamped CFDI 4.0 (Mexican e-invoice) under
-  ``invoices/pending/<UUID>/<SHA-256>.xml`` and registers it in DynamoDB with
-  status ``received``.
+  ``invoices/pending/<UUID>/<SHA-256>.xml`` and registers it in DynamoDB.
+- Before registering an invoice, sends the text the supplier writes freely
+  inside the CFDI (issuer name, line descriptions, supplier codes, units) to the
+  Bedrock guardrail. A clean invoice is registered with status ``received`` and
+  goes to the AI agent. A flagged one, or one that could not be screened, is
+  registered with status ``needs_review`` and the agent never runs on it.
 - Copies emails without any CFDI to ``non-invoices/``.
 
-Every decision here is deterministic. There is no model in this function.
+Every decision here is deterministic, except the guardrail's classification,
+which can only send an invoice to a person, never let it through on its own.
 """
 
 import base64
@@ -28,7 +33,7 @@ from email import policy
 from xml.etree.ElementTree import ParseError, fromstring
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 # Expat 2.6.0+ blocks the known malicious XML patterns ("billion laughs",
 # "quadratic blowup", huge tokens). If the runtime ships an older version, the
@@ -38,6 +43,9 @@ if pyexpat.version_info < (2, 6, 0):
 
 s3 = boto3.client("s3")
 table = boto3.resource("dynamodb").Table(os.environ["INVOICES_TABLE"])
+guardrail = boto3.client("bedrock-runtime")
+GUARDRAIL_ID = os.environ["GUARDRAIL_ID"]
+GUARDRAIL_VERSION = os.environ["GUARDRAIL_VERSION"]
 
 NS = {
     "cfdi": "http://www.sat.gob.mx/cfd/4",
@@ -47,6 +55,10 @@ MAX_XML_BYTES = 1_000_000  # a real CFDI is a few KB; anything above 1 MB is sus
 
 # Errors S3 returns when a conditional write finds the object already there
 OBJECT_EXISTS_ERRORS = ("PreconditionFailed", "ConditionalRequestConflict")
+
+# Fixed texts: a stored reason never repeats what the supplier wrote
+FLAGGED_REASON = "Supplier text in the invoice was flagged by the guardrail as a possible prompt attack; a person must review it."
+UNAVAILABLE_REASON = "Supplier text in the invoice could not be screened by the guardrail; a person must review it."
 
 
 def parse_cfdi(content: bytes):
@@ -74,7 +86,38 @@ def parse_cfdi(content: bytes):
     }
     if not all(data.values()):
         return None
+
+    # Free text written by the supplier, the part of the CFDI the agent reads
+    texts = [issuer.get("Nombre") or ""]
+    for concept in root.findall("cfdi:Conceptos/cfdi:Concepto", NS):
+        texts += [concept.get(name) or "" for name in ("Descripcion", "NoIdentificacion", "Unidad")]
+    data["supplier_texts"] = list(dict.fromkeys(text.strip() for text in texts if text.strip()))
     return data
+
+
+def screen(texts: list) -> tuple:
+    """Returns ("clean" | "flagged" | "unavailable", names of the filters that fired)."""
+    if not texts:
+        return "clean", []
+    try:
+        response = guardrail.apply_guardrail(
+            guardrailIdentifier=GUARDRAIL_ID,
+            guardrailVersion=GUARDRAIL_VERSION,
+            source="INPUT",
+            content=[{"text": {"text": text}} for text in texts],
+        )
+    except (ClientError, BotoCoreError):
+        # Fail closed: text that could not be checked goes to a person
+        return "unavailable", []
+
+    if response.get("action") != "GUARDRAIL_INTERVENED":
+        return "clean", []
+    filters = sorted({
+        item.get("type", "UNKNOWN")
+        for assessment in response.get("assessments", [])
+        for item in assessment.get("contentPolicy", {}).get("filters", [])
+    })
+    return "flagged", filters
 
 
 def copy_email(bucket: str, key: str, destination_prefix: str) -> str:
@@ -87,8 +130,11 @@ def copy_email(bucket: str, key: str, destination_prefix: str) -> str:
     return destination
 
 
-def store_invoice(bucket: str, email_key: str, content: bytes, data: dict) -> str:
+def store_invoice(bucket: str, email_key: str, content: bytes, data: dict, verdict: str = "clean") -> str:
     """Store the XML and register it.
+
+    A clean invoice is registered as "received" (the agent picks it up); a
+    flagged or unscreened one as "needs_review" (the agent never sees it).
 
     Returns:
       'stored'    - new invoice, XML stored and registered.
@@ -124,19 +170,27 @@ def store_invoice(bucket: str, email_key: str, content: bytes, data: dict) -> st
         xml_is_new = False  # identical file already stored (resend or retry)
 
     # 2. Register in DynamoDB only if the UUID is new (conditional put).
+    now = datetime.now(timezone.utc).isoformat()
+    item = {
+        "uuid": data["uuid"],
+        "status": "received",
+        "issuer_rfc": data["issuer_rfc"],
+        "type": data["type"],
+        "total": data["total"],
+        "sha256": sha256_hex,
+        "xml_key": xml_key,
+        "email_key": email_key,
+        "received_at": now,
+    }
+    if verdict != "clean":
+        item.update(
+            status="needs_review",
+            decision_reasons=[FLAGGED_REASON if verdict == "flagged" else UNAVAILABLE_REASON],
+            decided_at=now,
+        )
     try:
         table.put_item(
-            Item={
-                "uuid": data["uuid"],
-                "status": "received",
-                "issuer_rfc": data["issuer_rfc"],
-                "type": data["type"],
-                "total": data["total"],
-                "sha256": sha256_hex,
-                "xml_key": xml_key,
-                "email_key": email_key,
-                "received_at": datetime.now(timezone.utc).isoformat(),
-            },
+            Item=item,
             ConditionExpression="attribute_not_exists(#uuid)",
             ExpressionAttributeNames={"#uuid": "uuid"},
         )
@@ -171,6 +225,7 @@ def handler(event, context):
             continue
 
         outcomes = {"stored": [], "duplicate": [], "conflict": []}
+        screening = {}
         for part in message.iter_attachments():
             filename = (part.get_filename() or "").lower()
             if not filename.endswith(".xml"):
@@ -179,12 +234,17 @@ def handler(event, context):
             data = parse_cfdi(content)
             if data is None:
                 continue
-            outcome = store_invoice(bucket, key, content, data)
+            verdict, filters = screen(data["supplier_texts"])
+            outcome = store_invoice(bucket, key, content, data, verdict)
             outcomes[outcome].append(data["uuid"])
+            if outcome == "stored" and verdict != "clean":
+                screening[data["uuid"]] = {"guardrail": verdict, "filters": filters}
 
         summary["invoices"] = outcomes["stored"]
         summary["duplicates"] = outcomes["duplicate"]
         summary["conflicts"] = outcomes["conflict"]
+        # Invoices sent to review by the guardrail ("flagged" or "unavailable")
+        summary["screened_out"] = screening
         if not any(outcomes.values()):
             summary["result"] = "non_invoice"
             summary["moved_to"] = copy_email(bucket, key, "non-invoices/")
