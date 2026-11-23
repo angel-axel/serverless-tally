@@ -1,0 +1,2 @@
+boto3
+moto[s3,dynamodb]>=5.0

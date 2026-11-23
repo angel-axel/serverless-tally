@@ -125,10 +125,36 @@ data "aws_iam_policy_document" "read_invoice_lambda_policy" {
   }
 
   statement {
+    sid       = "SendFlaggedInvoiceToReview"
+    effect    = "Allow"
+    actions   = ["dynamodb:UpdateItem"]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.arn]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "dynamodb:Attributes"
+      values   = ["uuid", "status", "decision_reasons", "decided_at"]
+    }
+
+    condition {
+      test     = "StringEqualsIfExists"
+      variable = "dynamodb:ReturnValues"
+      values   = ["NONE"]
+    }
+  }
+
+  statement {
     sid       = "ReadInvoiceXml"
     effect    = "Allow"
     actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.s3_bucket.arn}/invoices/pending/*"]
+  }
+
+  statement {
+    sid       = "ScreenSupplierText"
+    effect    = "Allow"
+    actions   = ["bedrock:ApplyGuardrail"]
+    resources = [aws_bedrock_guardrail.invoice_matcher_guardrail.guardrail_arn]
   }
 
   statement {
