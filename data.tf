@@ -371,6 +371,16 @@ data "aws_iam_policy_document" "dispatcher_lambda_policy" {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
     resources = ["${aws_cloudwatch_log_group.cloudwatch_log_group_dispatcher_lambda.arn}:*"]
   }
+
+  statement {
+    sid    = "WriteTraces"
+    effect = "Allow"
+    actions = [
+      "xray:PutTraceSegments",
+      "xray:PutTelemetryRecords",
+    ]
+    resources = ["*"]
+  }
 }
 
 data "archive_file" "dispatcher_lambda_code" {

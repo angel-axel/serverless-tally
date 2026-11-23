@@ -361,6 +361,10 @@ resource "aws_lambda_function" "lambda_function_dispatcher" {
 
   timeout = var.agent_timeout_seconds + 60
 
+  tracing_config {
+    mode = "Active"
+  }
+
   environment {
     variables = {
       HARNESS_ARN           = aws_bedrockagentcore_harness.invoice_matcher_harness.arn
