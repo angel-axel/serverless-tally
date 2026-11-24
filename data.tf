@@ -232,24 +232,6 @@ data "aws_iam_policy_document" "propose_match_lambda_policy" {
 
 data "aws_iam_policy_document" "decision_lambda_policy" {
   statement {
-    sid    = "ReadInvoicesStream"
-    effect = "Allow"
-    actions = [
-      "dynamodb:DescribeStream",
-      "dynamodb:GetRecords",
-      "dynamodb:GetShardIterator",
-    ]
-    resources = [aws_dynamodb_table.invoices_dynamodb_table.stream_arn]
-  }
-
-  statement {
-    sid       = "ListStreams"
-    effect    = "Allow"
-    actions   = ["dynamodb:ListStreams"]
-    resources = ["*"]
-  }
-
-  statement {
     sid       = "ReadInvoiceRecord"
     effect    = "Allow"
     actions   = ["dynamodb:GetItem"]
@@ -309,6 +291,13 @@ data "aws_iam_policy_document" "decision_lambda_policy" {
   }
 
   statement {
+    sid       = "SendFailedEvents"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.sqs_queue_failed_events.arn]
+  }
+
+  statement {
     sid       = "WriteLogs"
     effect    = "Allow"
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
@@ -345,24 +334,6 @@ data "aws_iam_policy_document" "dispatcher_assume_role_policy" {
 
 data "aws_iam_policy_document" "dispatcher_lambda_policy" {
   statement {
-    sid    = "ReadInvoicesStream"
-    effect = "Allow"
-    actions = [
-      "dynamodb:DescribeStream",
-      "dynamodb:GetRecords",
-      "dynamodb:GetShardIterator",
-    ]
-    resources = [aws_dynamodb_table.invoices_dynamodb_table.stream_arn]
-  }
-
-  statement {
-    sid       = "ListStreams"
-    effect    = "Allow"
-    actions   = ["dynamodb:ListStreams"]
-    resources = ["*"]
-  }
-
-  statement {
     sid    = "InvokeInvoiceMatcherAgent"
     effect = "Allow"
     actions = [
@@ -370,6 +341,13 @@ data "aws_iam_policy_document" "dispatcher_lambda_policy" {
       "bedrock-agentcore:InvokeAgentRuntime",
     ]
     resources = [aws_bedrockagentcore_harness.invoice_matcher_harness.arn]
+  }
+
+  statement {
+    sid       = "SendFailedEvents"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.sqs_queue_failed_events.arn]
   }
 
   statement {
@@ -665,4 +643,147 @@ data "aws_iam_policy_document" "xray_transaction_search_policy" {
 
 data "aws_route53_zone" "route53_zone" {
   name = var.domain
+}
+
+data "aws_iam_policy_document" "failed_events_queue_policy" {
+  statement {
+    sid       = "EventBridgeRulesDeadLetters"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.sqs_queue_failed_events.arn]
+
+    principals {
+      type        = "Service"
+      identifiers = ["events.amazonaws.com"]
+    }
+
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values = [
+        aws_cloudwatch_event_rule.cloudwatch_event_rule_new_invoice.arn,
+        aws_cloudwatch_event_rule.cloudwatch_event_rule_match_proposed.arn,
+        aws_cloudwatch_event_rule.cloudwatch_event_rule_needs_review.arn,
+      ]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "invoices_stream_pipe_assume_role_policy" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["pipes.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.caller_identity.account_id]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "invoices_stream_pipe_policy" {
+  statement {
+    sid    = "ReadInvoicesStream"
+    effect = "Allow"
+    actions = [
+      "dynamodb:DescribeStream",
+      "dynamodb:GetRecords",
+      "dynamodb:GetShardIterator",
+    ]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.stream_arn]
+  }
+
+  statement {
+    sid       = "ListStreams"
+    effect    = "Allow"
+    actions   = ["dynamodb:ListStreams"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "PublishInvoiceEvents"
+    effect    = "Allow"
+    actions   = ["events:PutEvents"]
+    resources = [aws_cloudwatch_event_bus.cloudwatch_event_bus_invoice_events.arn]
+  }
+
+  statement {
+    sid       = "SendFailedRecords"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.sqs_queue_failed_events.arn]
+  }
+}
+
+data "aws_iam_policy_document" "review_notifier_lambda_policy" {
+  statement {
+    sid       = "ReadInvoiceRecord"
+    effect    = "Allow"
+    actions   = ["dynamodb:GetItem"]
+    resources = [aws_dynamodb_table.invoices_dynamodb_table.arn]
+  }
+
+  statement {
+    sid       = "ReadInvoiceXml"
+    effect    = "Allow"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.s3_bucket.arn}/invoices/pending/*"]
+  }
+
+  statement {
+    sid     = "SendReviewEmail"
+    effect  = "Allow"
+    actions = ["ses:SendRawEmail"]
+    resources = [
+      aws_ses_domain_identity.ses_domain_identity.arn,
+      aws_ses_email_identity.ses_email_identity_review_recipient.arn,
+    ]
+
+    condition {
+      test     = "StringEquals"
+      variable = "ses:FromAddress"
+      values   = [local.review_sender]
+    }
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "ses:Recipients"
+      values   = [var.review_recipient_email]
+    }
+  }
+
+  statement {
+    sid       = "SendFailedEvents"
+    effect    = "Allow"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.sqs_queue_failed_events.arn]
+  }
+
+  statement {
+    sid       = "WriteLogs"
+    effect    = "Allow"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.cloudwatch_log_group_review_notifier_lambda.arn}:*"]
+  }
+}
+
+data "archive_file" "review_notifier_lambda_code" {
+  type        = "zip"
+  source_dir  = "${path.module}/lambdas/review_notifier"
+  output_path = "${path.module}/dist/lambdas/review_notifier.zip"
+
+  excludes = [
+    "__pycache__",
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "tests",
+    "tests/**",
+    "README.md",
+  ]
 }

@@ -6,19 +6,19 @@ Starts the invoice-matching agent for every new invoice. It is the only bridge b
 
 | Rule | How |
 |---|---|
-| Only brand-new invoices wake the agent | The event source mapping filters `INSERT` + `status = "received"`; the handler checks both again |
+| Only brand-new invoices wake the agent | The EventBridge rule `tally-new-invoice` filters `INSERT` + `status = "received"`; the handler checks both again |
 | Status changes never re-trigger the agent | The agent's own update (`received` → `match_proposed`) is a `MODIFY`, which is filtered out, so there is no loop |
 | No supplier-written text reaches the agent through this function | The prompt is a fixed template; the only variable is the UUID, which must match a strict upper-case UUID pattern |
 | Each invoice runs in isolation | A new AgentCore session per invoice; no context carries over between invoices |
 | Agent runs are bounded | `maxIterations` and `timeoutSeconds` are sent on every call; the Lambda timeout is the agent timeout plus 60 s |
 | The function can invoke only this agent | Its IAM role allows `InvokeHarness` / `InvokeAgentRuntime` on the invoice matcher harness ARN only |
-| A failed run is retried, not silently lost | Agent error events raise an exception, so the stream retries the record (2 retries, max age 1 h) |
+| A failed run is retried, not silently lost | Agent error events raise an exception, so Lambda retries the event (2 retries, max age 1 h) and then sends it to the SQS queue `tally-failed-events` |
 
 ## Processing steps
 
 1. The gatekeeper inserts an invoice into the `tally-invoices` table with `status = "received"`.
 2. DynamoDB Streams records the change (`NEW_IMAGE`).
-3. The Lambda event source mapping reads the stream, applies the filter and invokes the dispatcher with one record (`batch_size = 1`).
+3. The EventBridge pipe `tally-invoices-stream`, the only reader of the stream, publishes the record on the bus `tally-invoice-events`. The rule `tally-new-invoice` matches it and invokes the dispatcher asynchronously with `{"Records": [record]}`, the same shape a stream event has.
 4. The handler re-checks the event type and status, and validates the UUID.
 5. It calls `InvokeHarness` with the fixed prompt:
    `Match invoice <UUID> against the open purchase orders of its supplier and submit your proposal with the propose_match tool.`
@@ -26,7 +26,7 @@ Starts the invoice-matching agent for every new invoice. It is the only bridge b
 
 ## Inputs and outputs
 
-**Input:** a DynamoDB Streams event. Only `eventName`, `NewImage.uuid` and `NewImage.status` are read.
+**Input:** a DynamoDB stream record wrapped as `{"Records": [record]}` by the rule's input transformer. Only `eventName`, `NewImage.uuid` and `NewImage.status` are read.
 
 **Output:** one JSON log line per record, for example:
 
@@ -45,12 +45,11 @@ The dispatcher writes nothing to DynamoDB or S3. The agent records its proposal 
 
 | Statement | Actions | Resource |
 |---|---|---|
-| `ReadInvoicesStream` | `dynamodb:DescribeStream`, `GetRecords`, `GetShardIterator` | The invoices table stream |
-| `ListStreams` | `dynamodb:ListStreams` | `*` (no resource-level support) |
+| `SendFailedEvents` | `sqs:SendMessage` | The failure queue (Lambda's on-failure destination) |
 | `InvokeInvoiceMatcherAgent` | `bedrock-agentcore:InvokeHarness`, `InvokeAgentRuntime` | The invoice matcher harness only |
 | `WriteLogs` | `logs:CreateLogStream`, `PutLogEvents` | Its own log group |
 
-No resource-based policy is needed: the event source mapping is part of the Lambda service, which reads the stream with the function's execution role and invokes the function itself.
+The function does not read the stream. A resource-based permission lets only the rule `tally-new-invoice` invoke it.
 
 ## Configuration
 
@@ -75,7 +74,7 @@ python -m unittest discover -s lambdas/dispatcher/tests -v
 | Session ID is unique and within limits | Every run gets its own session, 33–100 characters |
 | Status changes do not wake the agent | `MODIFY`, `REMOVE` or another status are skipped, even with a misconfigured filter |
 | Malformed UUID never reaches the prompt | A UUID with an injected instruction appended is rejected |
-| Agent error is raised so the stream retries | Error events in the response stream fail the invocation |
+| Agent error is raised so Lambda retries | Error events in the response stream fail the invocation |
 | Summary includes stop reason and usage | Logs carry the stop reason, final answer and token counts |
 
 All 6 tests pass.
@@ -83,13 +82,13 @@ All 6 tests pass.
 ## Design decisions
 
 - **A fixed prompt instead of forwarding the invoice.** The dispatcher could send the invoice content to save a tool call, but then supplier-written text would arrive as part of the user message. Sending only the UUID keeps third-party text inside tool results, where the agent's instructions treat it as data.
-- **Filter twice.** The event source mapping filter saves invocations and cost; the check in the handler is defense in depth in case the filter is changed or removed.
+- **Filter twice.** The EventBridge rule saves invocations and cost; the check in the handler is defense in depth in case the filter is changed or removed.
 - **One record per invocation.** With `batch_size = 1`, a failing invoice is retried on its own and does not block or repeat other invoices.
-- **Bounded retries.** The default for streams is to retry forever, which would block the shard. Two retries and a one-hour maximum age keep the stream moving.
+- **Bounded retries.** Two Lambda retries and a one-hour maximum age; the pipe reading the stream never waits on the agent, so a slow run cannot block other invoices.
 - **Fail at startup on an old SDK.** `InvokeHarness` is a recent API; checking for it at import time gives one clear error instead of a failure on every invoice.
 
 ## Known limitations
 
-- After the last retry, a failed record is dropped from the stream. The invoice stays in the table with `status = "received"`, but nothing alerts the owner yet. An on-failure destination (SQS) is the planned fix.
+- After the last retry, the event goes to the SQS queue `tally-failed-events`, but the invoice stays in `received` and nothing alerts the owner yet. A CloudWatch alarm on the queue is the planned fix.
 - The dispatcher waits for the whole agent run, so it is billed for the agent's duration. An asynchronous invocation would be cheaper at higher volumes.
 - Retries start a new agent session, so a partially completed run may repeat tool calls. `propose_match` must stay idempotent (conditional update on `status = "received"`).

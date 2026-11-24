@@ -1,6 +1,7 @@
 """Decision Lambda.
 
-Triggered by the invoices stream when an invoice moves to "match_proposed".
+Triggered by the EventBridge rule "match_proposed" when an invoice moves to
+"match_proposed". The rule delivers the stream record as {"Records": [record]}.
 It checks the agent's proposal with plain arithmetic and moves the invoice to
 "matched" or "needs_review". There is no model in this function.
 
@@ -233,7 +234,7 @@ def decide(invoice_uuid: str) -> dict:
         latest = invoices.get_item(Key={"uuid": invoice_uuid}, ConsistentRead=True).get("Item") or {}
         if latest.get("status") != "match_proposed":
             return {"result": "skipped_already_decided"}
-        # The order changed: fail so the stream retries with fresh data
+        # The order changed: fail so Lambda retries the event with fresh data
         raise RuntimeError(f"Order {order_id} changed while deciding invoice {invoice_uuid}; retrying") from exc
     return {"result": "matched", "order_id": order_id}
 
@@ -245,7 +246,7 @@ def handler(event, context):
         invoice_uuid = new_image.get("uuid", {}).get("S", "")
         status = new_image.get("status", {}).get("S", "")
 
-        # The event source mapping filters MODIFY + match_proposed; check again
+        # The EventBridge rule filters MODIFY + match_proposed; check again
         if record.get("eventName") != "MODIFY" or status != "match_proposed":
             summary = {"result": "skipped_not_pending"}
         else:

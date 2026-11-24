@@ -1,8 +1,8 @@
 """Dispatcher Lambda.
 
-Triggered by the DynamoDB stream of the invoices table, only for newly
-inserted invoices with status ``received`` (filtered at the event source
-mapping). For each one, it invokes the invoice-matching agent on the
+Triggered by the EventBridge rule "new invoice" on the invoice events bus,
+only for newly inserted invoices with status ``received``. The rule delivers
+the stream record as ``{"Records": [record]}``. For each one, it invokes the invoice-matching agent on the
 AgentCore harness and passes it the invoice UUID.
 
 The prompt is fixed and built here. The only variable part is the UUID, read
@@ -68,7 +68,7 @@ def invoke_agent(invoice_uuid: str) -> dict:
         else:
             for error_key in ERROR_EVENTS:
                 if error_key in event:
-                    # Raising makes the stream retry this record.
+                    # Raising makes Lambda retry the event, then send it to the failure queue.
                     raise RuntimeError(f"{error_key}: {event[error_key].get('message', '')}")
 
     return {
@@ -88,7 +88,7 @@ def handler(event, context):
         status = new_image.get("status", {}).get("S", "")
         summary = {"invoice": invoice_uuid, "event": record.get("eventName")}
 
-        # The event source mapping already filters INSERT + status "received".
+        # The EventBridge rule already filters INSERT + status "received".
         # Check again here so a misconfigured filter can never wake the agent.
         if record.get("eventName") != "INSERT" or status != "received":
             summary["result"] = "skipped_not_new"

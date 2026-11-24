@@ -20,11 +20,11 @@ Deterministic check of the agent's proposal. When an invoice moves to `match_pro
 
 ## Processing steps
 
-1. The invoices stream delivers a `MODIFY` with `NewImage.status = match_proposed` (filtered by the event source mapping and checked again in code).
+1. The pipe publishes the stream record on the invoice events bus, and the rule `tally-match-proposed` delivers a `MODIFY` with `NewImage.status = match_proposed` as `{"Records": [record]}` (filtered by the rule and checked again in code).
 2. Read the invoice (consistent read), the XML from S3 and the proposed order (key built from the invoice's RFC).
 3. Run every check and collect the reasons.
 4. With reasons: set `needs_review` and `decision_reasons`.
-5. Without reasons: one `TransactWriteItems` sets the invoice to `matched` and the order's `invoiced_quantities` (closing the order when fully invoiced). If the order changed in between, the transaction is cancelled and the function raises, so the stream retries with fresh data.
+5. Without reasons: one `TransactWriteItems` sets the invoice to `matched` and the order's `invoiced_quantities` (closing the order when fully invoiced). If the order changed in between, the transaction is cancelled and the function raises, so Lambda retries the event with fresh data (2 retries, then the failure queue).
 
 Output, one JSON log line per record:
 
@@ -39,7 +39,7 @@ Output, one JSON log line per record:
 
 | Statement | Actions | Resource |
 |---|---|---|
-| `ReadInvoicesStream`, `ListStreams` | Stream read actions | Invoices table stream |
+| `SendFailedEvents` | `sqs:SendMessage` | The failure queue (Lambda's on-failure destination) |
 | `ReadInvoiceRecord` | `dynamodb:GetItem` | Invoices table |
 | `RecordDecision` | `dynamodb:UpdateItem`, only `uuid`, `status`, `decision_reasons`, `decided_at` | Invoices table |
 | `ReadInvoiceXml` | `s3:GetObject` | `invoices/pending/*` only |

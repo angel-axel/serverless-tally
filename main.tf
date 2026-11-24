@@ -23,6 +23,8 @@ locals {
 
   domain = "${var.subdomain}.${var.domain}"
 
+  review_sender = "${var.review_sender_local_part}@${local.domain}"
+
   invoice_matcher_model_ids = distinct([
     for model in data.aws_bedrock_foundation_models.text_models.model_summaries :
     model.model_id if model.model_name == var.invoice_matcher_model_name && length(split(":", model.model_id)) <= 2
@@ -381,31 +383,6 @@ resource "aws_lambda_function" "lambda_function_dispatcher" {
   ]
 }
 
-resource "aws_lambda_event_source_mapping" "invoices_stream_to_dispatcher" {
-  event_source_arn  = aws_dynamodb_table.invoices_dynamodb_table.stream_arn
-  function_name     = aws_lambda_function.lambda_function_dispatcher.arn
-  starting_position = "LATEST"
-
-  batch_size = 1
-
-  maximum_retry_attempts         = 2
-  maximum_record_age_in_seconds  = 3600
-  bisect_batch_on_function_error = false
-
-  filter_criteria {
-    filter {
-      pattern = jsonencode({
-        eventName = ["INSERT"]
-        dynamodb = {
-          NewImage = {
-            status = { S = ["received"] }
-          }
-        }
-      })
-    }
-  }
-}
-
 resource "aws_cloudwatch_log_group" "cloudwatch_log_group_read_invoice_lambda" {
   name              = "/aws/lambda/${var.read_invoice_function_name}"
   retention_in_days = var.tools_log_retention_days
@@ -564,31 +541,6 @@ resource "aws_lambda_function" "lambda_function_decision" {
     aws_cloudwatch_log_group.cloudwatch_log_group_decision_lambda,
     aws_iam_role_policy.iam_role_policy_decision_lambda,
   ]
-}
-
-resource "aws_lambda_event_source_mapping" "invoices_stream_to_decision" {
-  event_source_arn  = aws_dynamodb_table.invoices_dynamodb_table.stream_arn
-  function_name     = aws_lambda_function.lambda_function_decision.arn
-  starting_position = "LATEST"
-
-  batch_size = 1
-
-  maximum_retry_attempts         = 2
-  maximum_record_age_in_seconds  = 3600
-  bisect_batch_on_function_error = false
-
-  filter_criteria {
-    filter {
-      pattern = jsonencode({
-        eventName = ["MODIFY"]
-        dynamodb = {
-          NewImage = {
-            status = { S = ["match_proposed"] }
-          }
-        }
-      })
-    }
-  }
 }
 
 resource "aws_iam_role" "iam_role_invoice_matcher_agent" {
@@ -862,4 +814,302 @@ resource "aws_bedrockagentcore_harness" "invoice_matcher_harness" {
 resource "aws_cloudwatch_log_resource_policy" "xray_transaction_search_log_resource_policy" {
   policy_name     = "tally-xray-transaction-search"
   policy_document = data.aws_iam_policy_document.xray_transaction_search_policy.json
+}
+
+resource "aws_sqs_queue" "sqs_queue_failed_events" {
+  name                      = var.failed_events_queue_name
+  message_retention_seconds = 1209600
+  sqs_managed_sse_enabled   = true
+}
+
+resource "aws_sqs_queue_policy" "sqs_queue_policy_failed_events" {
+  queue_url = aws_sqs_queue.sqs_queue_failed_events.id
+  policy    = data.aws_iam_policy_document.failed_events_queue_policy.json
+}
+
+resource "aws_cloudwatch_event_bus" "cloudwatch_event_bus_invoice_events" {
+  name = var.invoice_events_bus_name
+}
+
+resource "aws_iam_role" "iam_role_invoices_stream_pipe" {
+  name               = "${var.invoices_stream_pipe_name}-role"
+  assume_role_policy = data.aws_iam_policy_document.invoices_stream_pipe_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy" "iam_role_policy_invoices_stream_pipe" {
+  name   = "${var.invoices_stream_pipe_name}-permissions"
+  role   = aws_iam_role.iam_role_invoices_stream_pipe.id
+  policy = data.aws_iam_policy_document.invoices_stream_pipe_policy.json
+}
+
+resource "aws_pipes_pipe" "pipes_pipe_invoices_stream" {
+  name        = var.invoices_stream_pipe_name
+  description = "Single reader of the invoices table stream. Publishes every insert and change to the invoice events bus."
+  role_arn    = aws_iam_role.iam_role_invoices_stream_pipe.arn
+  source      = aws_dynamodb_table.invoices_dynamodb_table.stream_arn
+  target      = aws_cloudwatch_event_bus.cloudwatch_event_bus_invoice_events.arn
+
+  source_parameters {
+    dynamodb_stream_parameters {
+      starting_position             = "LATEST"
+      batch_size                    = 1
+      maximum_retry_attempts        = 3
+      maximum_record_age_in_seconds = 3600
+
+      dead_letter_config {
+        arn = aws_sqs_queue.sqs_queue_failed_events.arn
+      }
+    }
+
+    filter_criteria {
+      filter {
+        pattern = jsonencode({
+          eventName = ["INSERT", "MODIFY"]
+        })
+      }
+    }
+  }
+
+  target_parameters {
+    eventbridge_event_bus_parameters {
+      source      = var.invoice_events_source
+      detail_type = "Invoice changed"
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.iam_role_policy_invoices_stream_pipe]
+}
+
+resource "aws_cloudwatch_event_rule" "cloudwatch_event_rule_new_invoice" {
+  name           = "tally-new-invoice"
+  description    = "A new invoice registered with status received: start the invoice matcher agent."
+  event_bus_name = aws_cloudwatch_event_bus.cloudwatch_event_bus_invoice_events.name
+
+  event_pattern = jsonencode({
+    source = [var.invoice_events_source]
+    detail = {
+      eventName = ["INSERT"]
+      dynamodb = {
+        NewImage = {
+          status = { S = ["received"] }
+        }
+      }
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "cloudwatch_event_target_new_invoice_dispatcher" {
+  rule           = aws_cloudwatch_event_rule.cloudwatch_event_rule_new_invoice.name
+  event_bus_name = aws_cloudwatch_event_bus.cloudwatch_event_bus_invoice_events.name
+  target_id      = "dispatcher"
+  arn            = aws_lambda_function.lambda_function_dispatcher.arn
+
+  input_transformer {
+    input_paths = {
+      record = "$.detail"
+    }
+    input_template = "{\"Records\": [<record>]}"
+  }
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 3
+  }
+
+  dead_letter_config {
+    arn = aws_sqs_queue.sqs_queue_failed_events.arn
+  }
+}
+
+resource "aws_lambda_permission" "lambda_permission_dispatcher_events_invoke" {
+  statement_id  = "AllowNewInvoiceRule"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.lambda_function_dispatcher.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.cloudwatch_event_rule_new_invoice.arn
+}
+
+resource "aws_lambda_function_event_invoke_config" "lambda_function_event_invoke_config_dispatcher" {
+  function_name                = aws_lambda_function.lambda_function_dispatcher.function_name
+  maximum_retry_attempts       = 2
+  maximum_event_age_in_seconds = 3600
+
+  destination_config {
+    on_failure {
+      destination = aws_sqs_queue.sqs_queue_failed_events.arn
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.iam_role_policy_dispatcher_lambda]
+}
+
+resource "aws_cloudwatch_event_rule" "cloudwatch_event_rule_match_proposed" {
+  name           = "tally-match-proposed"
+  description    = "The agent proposed a match: check every number and decide."
+  event_bus_name = aws_cloudwatch_event_bus.cloudwatch_event_bus_invoice_events.name
+
+  event_pattern = jsonencode({
+    source = [var.invoice_events_source]
+    detail = {
+      eventName = ["MODIFY"]
+      dynamodb = {
+        NewImage = {
+          status = { S = ["match_proposed"] }
+        }
+      }
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "cloudwatch_event_target_match_proposed_decision" {
+  rule           = aws_cloudwatch_event_rule.cloudwatch_event_rule_match_proposed.name
+  event_bus_name = aws_cloudwatch_event_bus.cloudwatch_event_bus_invoice_events.name
+  target_id      = "decision"
+  arn            = aws_lambda_function.lambda_function_decision.arn
+
+  input_transformer {
+    input_paths = {
+      record = "$.detail"
+    }
+    input_template = "{\"Records\": [<record>]}"
+  }
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 3
+  }
+
+  dead_letter_config {
+    arn = aws_sqs_queue.sqs_queue_failed_events.arn
+  }
+}
+
+resource "aws_lambda_permission" "lambda_permission_decision_events_invoke" {
+  statement_id  = "AllowMatchProposedRule"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.lambda_function_decision.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.cloudwatch_event_rule_match_proposed.arn
+}
+
+resource "aws_lambda_function_event_invoke_config" "lambda_function_event_invoke_config_decision" {
+  function_name                = aws_lambda_function.lambda_function_decision.function_name
+  maximum_retry_attempts       = 2
+  maximum_event_age_in_seconds = 3600
+
+  destination_config {
+    on_failure {
+      destination = aws_sqs_queue.sqs_queue_failed_events.arn
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.iam_role_policy_decision_lambda]
+}
+
+resource "aws_ses_email_identity" "ses_email_identity_review_recipient" {
+  email = var.review_recipient_email
+}
+
+resource "aws_cloudwatch_log_group" "cloudwatch_log_group_review_notifier_lambda" {
+  name              = "/aws/lambda/${var.review_notifier_function_name}"
+  retention_in_days = var.review_notifier_log_retention_days
+}
+
+resource "aws_iam_role" "iam_role_review_notifier_lambda" {
+  name               = "${var.review_notifier_function_name}-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume_role_policy.json
+}
+
+resource "aws_iam_role_policy" "iam_role_policy_review_notifier_lambda" {
+  name   = "${var.review_notifier_function_name}-permissions"
+  role   = aws_iam_role.iam_role_review_notifier_lambda.id
+  policy = data.aws_iam_policy_document.review_notifier_lambda_policy.json
+}
+
+resource "aws_lambda_function" "lambda_function_review_notifier" {
+  function_name    = var.review_notifier_function_name
+  role             = aws_iam_role.iam_role_review_notifier_lambda.arn
+  runtime          = "python3.13"
+  handler          = "handler.handler"
+  filename         = data.archive_file.review_notifier_lambda_code.output_path
+  source_code_hash = data.archive_file.review_notifier_lambda_code.output_base64sha256
+  memory_size      = 256
+  timeout          = 30
+
+  environment {
+    variables = {
+      INVOICES_TABLE = aws_dynamodb_table.invoices_dynamodb_table.name
+      BUCKET         = aws_s3_bucket.s3_bucket.id
+      SENDER         = local.review_sender
+      REVIEW_EMAIL   = var.review_recipient_email
+    }
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.cloudwatch_log_group_review_notifier_lambda,
+    aws_iam_role_policy.iam_role_policy_review_notifier_lambda,
+  ]
+}
+
+resource "aws_cloudwatch_event_rule" "cloudwatch_event_rule_needs_review" {
+  name           = "tally-needs-review"
+  description    = "An invoice was sent to review, by the gatekeeper or by the decision: email it to the reviewer."
+  event_bus_name = aws_cloudwatch_event_bus.cloudwatch_event_bus_invoice_events.name
+
+  event_pattern = jsonencode({
+    source = [var.invoice_events_source]
+    detail = {
+      eventName = ["INSERT", "MODIFY"]
+      dynamodb = {
+        NewImage = {
+          status = { S = ["needs_review"] }
+        }
+      }
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "cloudwatch_event_target_needs_review_notifier" {
+  rule           = aws_cloudwatch_event_rule.cloudwatch_event_rule_needs_review.name
+  event_bus_name = aws_cloudwatch_event_bus.cloudwatch_event_bus_invoice_events.name
+  target_id      = "review-notifier"
+  arn            = aws_lambda_function.lambda_function_review_notifier.arn
+
+  input_transformer {
+    input_paths = {
+      uuid = "$.detail.dynamodb.NewImage.uuid.S"
+    }
+    input_template = "{\"invoice_uuid\": \"<uuid>\"}"
+  }
+
+  retry_policy {
+    maximum_event_age_in_seconds = 3600
+    maximum_retry_attempts       = 3
+  }
+
+  dead_letter_config {
+    arn = aws_sqs_queue.sqs_queue_failed_events.arn
+  }
+}
+
+resource "aws_lambda_permission" "lambda_permission_review_notifier_events_invoke" {
+  statement_id  = "AllowNeedsReviewRule"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.lambda_function_review_notifier.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.cloudwatch_event_rule_needs_review.arn
+}
+
+resource "aws_lambda_function_event_invoke_config" "lambda_function_event_invoke_config_review_notifier" {
+  function_name                = aws_lambda_function.lambda_function_review_notifier.function_name
+  maximum_retry_attempts       = 2
+  maximum_event_age_in_seconds = 3600
+
+  destination_config {
+    on_failure {
+      destination = aws_sqs_queue.sqs_queue_failed_events.arn
+    }
+  }
+
+  depends_on = [aws_iam_role_policy.iam_role_policy_review_notifier_lambda]
 }

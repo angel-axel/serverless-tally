@@ -236,3 +236,71 @@ variable "tools_gateway_name" {
     error_message = "Use \"tally-\" followed by lowercase letters, numbers or hyphens."
   }
 }
+
+variable "failed_events_queue_name" {
+  description = "Name of the SQS queue that keeps every event that could not be delivered or processed: stream records the pipe could not publish, events a rule could not deliver, and Lambda invocations that failed after their retries."
+  type        = string
+  default     = "tally-failed-events"
+
+  validation {
+    condition     = can(regex("^tally-[a-z0-9-]{1,60}$", var.failed_events_queue_name))
+    error_message = "The queue name must start with 'tally-' and use lowercase letters, digits and hyphens."
+  }
+}
+
+variable "invoice_events_bus_name" {
+  description = "Name of the EventBridge bus that receives every change to the invoices table and routes it to the Lambdas that react to it."
+  type        = string
+  default     = "tally-invoice-events"
+
+  validation {
+    condition     = can(regex("^tally-[a-z0-9-]{1,60}$", var.invoice_events_bus_name))
+    error_message = "The bus name must start with 'tally-' and use lowercase letters, digits and hyphens."
+  }
+}
+
+variable "invoice_events_source" {
+  description = "Value of the 'source' field of the events the pipe publishes on the invoice events bus. Every rule matches on it."
+  type        = string
+  default     = "tally.invoices"
+}
+
+variable "invoices_stream_pipe_name" {
+  description = "Name of the EventBridge pipe that is the only reader of the invoices table stream."
+  type        = string
+  default     = "tally-invoices-stream"
+
+  validation {
+    condition     = can(regex("^tally-[a-z0-9-]{1,50}$", var.invoices_stream_pipe_name))
+    error_message = "The pipe name must start with 'tally-' and use lowercase letters, digits and hyphens."
+  }
+}
+
+variable "review_notifier_function_name" {
+  description = "Name of the Lambda function that emails an invoice to the reviewer when it is sent to review."
+  type        = string
+  default     = "tally-review-notifier"
+}
+
+variable "review_notifier_log_retention_days" {
+  description = "Days to keep the review notifier Lambda logs in CloudWatch."
+  type        = number
+  default     = 14
+}
+
+variable "review_recipient_email" {
+  description = "Email address that receives the invoices sent to review. While SES is in the sandbox, it must click the verification link SES sends once."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.review_recipient_email))
+    error_message = "The review recipient must be a valid email address."
+  }
+}
+
+variable "review_sender_local_part" {
+  description = "Local part of the address review emails are sent from (the part before the @). The domain is the one already verified in SES."
+  type        = string
+  default     = "review"
+}
+
