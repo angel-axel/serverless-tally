@@ -8,6 +8,7 @@ Runs against simulated S3 and DynamoDB (moto), so no AWS account is needed:
 
 import hashlib
 import importlib
+import json
 import os
 import sys
 import unittest
@@ -55,17 +56,21 @@ class FakeGuardrail:
 
 
 def cfdi(total="1160.00", uuid=UUID.lower(), with_stamp=True, namespace="http://www.sat.gob.mx/cfd/4",
-         issuer_name="ESCUELA KEMPER URGATE", descriptions=("LTO MULTIGRADO QS 25W-50 1L",)):
+         issuer_name="ESCUELA KEMPER URGATE", descriptions=("LTO MULTIGRADO QS 25W-50 1L",),
+         rfc="EKU9003173C9", clave_prod_serv="01010101", clave_unidad="H87", extra="", issuers=1):
     stamp = f'<tfd:TimbreFiscalDigital UUID="{uuid}"/>' if with_stamp else ""
     concepts = "".join(
-        f'<cfdi:Concepto NoIdentificacion="SKU-{n}" Cantidad="1" Unidad="Pieza" Descripcion="{d}"/>'
+        f'<cfdi:Concepto ClaveProdServ="{clave_prod_serv}" NoIdentificacion="SKU-{n}" Cantidad="1" '
+        f'ClaveUnidad="{clave_unidad}" Unidad="Pieza" Descripcion="{d}"/>'
         for n, d in enumerate(descriptions, start=1)
     )
+    issuer = f'<cfdi:Emisor Rfc="{rfc}" Nombre="{issuer_name}"/>' * issuers
     return f'''<?xml version="1.0" encoding="UTF-8"?>
 <cfdi:Comprobante xmlns:cfdi="{namespace}" xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
   Version="4.0" TipoDeComprobante="I" Total="{total}">
-  <cfdi:Emisor Rfc="EKU9003173C9" Nombre="{issuer_name}"/>
+  {issuer}
   <cfdi:Conceptos>{concepts}</cfdi:Conceptos>
+  {extra}
   <cfdi:Complemento>{stamp}</cfdi:Complemento>
 </cfdi:Comprobante>'''.encode()
 
@@ -315,6 +320,52 @@ class GatekeeperStressTest(unittest.TestCase):
     def test_wrong_namespace_is_rejected(self):
         self.deliver("emails/fake-ns", make_email([xml_attachment(cfdi(namespace="http://evil.example/cfd/4"))]))
         self.assertEqual(self.keys("invoices/pending/"), [])
+
+    # --- SAT codes and structure: checked by format, not by the guardrail ----
+
+    def assert_rejected(self, content, reason_words):
+        summary = self.deliver("emails/rejected", make_email([xml_attachment(content)]))
+        self.assertEqual(summary["invoices"], [])
+        self.assertEqual(summary["result"], "non_invoice")
+        self.assertEqual(len(summary["rejected"]), 1)
+        self.assertIn(reason_words, summary["rejected"][0]["reason"])
+        self.assertNotIn("SYSTEM", json.dumps(summary["rejected"]))
+        self.assertEqual(self.keys("invoices/pending/"), [])
+        self.assertEqual(self.guardrail.calls, [])
+        return summary
+
+    def test_text_in_clave_prod_serv_is_rejected(self):
+        self.assert_rejected(cfdi(clave_prod_serv=INJECTION), "ClaveProdServ")
+
+    def test_text_in_clave_unidad_is_rejected(self):
+        self.assert_rejected(cfdi(clave_unidad="XBX. " + INJECTION), "ClaveUnidad")
+
+    def test_text_in_issuer_rfc_is_rejected(self):
+        self.assert_rejected(cfdi(rfc="EKU9003173C9 " + INJECTION), "RFC")
+
+    def test_malformed_uuid_is_rejected(self):
+        self.assert_rejected(cfdi(uuid="not-a-uuid/../emails"), "UUID")
+
+    def test_second_stamp_hidden_in_addenda_is_rejected(self):
+        forged = '<cfdi:Addenda><tfd:TimbreFiscalDigital UUID="00000000-0000-4000-8000-000000000000"/></cfdi:Addenda>'
+        self.assert_rejected(cfdi(extra=forged), "TimbreFiscalDigital")
+
+    def test_two_issuers_are_rejected(self):
+        self.assert_rejected(cfdi(issuers=2), "Emisor")
+
+    def test_unknown_elements_and_attributes_are_never_read(self):
+        """A custom tag or attribute is ignored: only known fields are read and screened."""
+        extra = f'<cfdi:NotaParaLaIA Texto="{INJECTION}">{INJECTION}</cfdi:NotaParaLaIA><!-- {INJECTION} -->'
+        summary = self.deliver("emails/custom-tag", make_email([xml_attachment(cfdi(extra=extra))]))
+        self.assertEqual(summary["invoices"], [UUID])
+        self.assertEqual(summary["screened_out"], {})
+        texts = [block["text"]["text"] for block in self.guardrail.calls[0]["content"]]
+        self.assertNotIn(INJECTION, texts)
+        self.assertEqual(self.table.get_item(Key={"uuid": UUID})["Item"]["status"], "received")
+
+    def test_rfc_with_enye_and_ampersand_is_accepted(self):
+        self.deliver("emails/rfc", make_email([xml_attachment(cfdi(rfc="Ñ&amp;A010101AB1"))]))
+        self.assertEqual(self.table.get_item(Key={"uuid": UUID})["Item"]["issuer_rfc"], "Ñ&A010101AB1")
 
     def test_xml_renamed_as_pdf_is_ignored(self):
         self.deliver("emails/pdf", make_email([("invoice.pdf", cfdi(), "application", "pdf")]))

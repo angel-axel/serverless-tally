@@ -15,6 +15,10 @@ What it does:
   Bedrock guardrail. A clean invoice is registered with status ``received`` and
   goes to the AI agent. A flagged one, or one that could not be screened, is
   registered with status ``needs_review`` and the agent never runs on it.
+- Rejects a CFDI whose structure or codes are not what the SAT allows: exactly
+  one issuer and one stamp (in its official place), a well-formed UUID and RFC,
+  and SAT catalog codes in ``ClaveProdServ`` and ``ClaveUnidad``. Those codes
+  reach the agent, and a code is checked by its format, not by the guardrail.
 - Copies emails without any CFDI to ``non-invoices/``.
 
 Every decision here is deterministic, except the guardrail's classification,
@@ -27,6 +31,7 @@ import hashlib
 import json
 import os
 import pyexpat
+import re
 import urllib.parse
 from datetime import datetime, timezone
 from email import policy
@@ -53,6 +58,13 @@ NS = {
 }
 MAX_XML_BYTES = 1_000_000  # a real CFDI is a few KB; anything above 1 MB is suspicious
 
+# Formats fixed by the SAT. A field that must be a code is checked as a code:
+# free text in it means the file is not a CFDI the SAT would have stamped.
+UUID_PATTERN = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$")
+RFC_PATTERN = re.compile(r"^[A-Z\u00d1&]{3,4}[0-9]{6}[A-Z0-9]{3}$")
+CLAVE_PROD_SERV_PATTERN = re.compile(r"^[0-9]{8}$")
+CLAVE_UNIDAD_PATTERN = re.compile(r"^[A-Z0-9]{1,3}$")
+
 # Errors S3 returns when a conditional write finds the object already there
 OBJECT_EXISTS_ERRORS = ("PreconditionFailed", "ConditionalRequestConflict")
 
@@ -62,21 +74,32 @@ UNAVAILABLE_REASON = "Supplier text in the invoice could not be screened by the 
 
 
 def parse_cfdi(content: bytes):
-    """Return basic fields if the file is a stamped CFDI 4.0, otherwise None."""
+    """Return (fields, None) for a valid stamped CFDI 4.0, or (None, reason).
+
+    The reason is "not_cfdi" when the file is not a CFDI at all (not XML, too
+    big, another root element). Otherwise it is a fixed text naming the rule
+    that failed; it never repeats what the file contains.
+    """
     if not content or len(content) > MAX_XML_BYTES:
-        return None
+        return None, "not_cfdi"
     try:
         root = fromstring(content)
     except (ParseError, ValueError):
-        return None
+        return None, "not_cfdi"
 
     if root.tag != "{" + NS["cfdi"] + "}Comprobante":
-        return None
+        return None, "not_cfdi"
 
-    stamp = root.find(".//tfd:TimbreFiscalDigital", NS)
-    issuer = root.find("cfdi:Emisor", NS)
-    if stamp is None or issuer is None:
-        return None
+    # Exactly one issuer and one stamp, the stamp in its official place: a second
+    # stamp hidden elsewhere (for example in an Addenda) must not be picked up
+    issuers = root.findall("cfdi:Emisor", NS)
+    stamps = root.findall(".//tfd:TimbreFiscalDigital", NS)
+    official_stamps = root.findall("cfdi:Complemento/tfd:TimbreFiscalDigital", NS)
+    if len(issuers) != 1:
+        return None, "the CFDI must have exactly one Emisor"
+    if len(stamps) != 1 or len(official_stamps) != 1:
+        return None, "the CFDI must have exactly one TimbreFiscalDigital, inside Complemento"
+    issuer, stamp = issuers[0], official_stamps[0]
 
     data = {
         "uuid": (stamp.get("UUID") or "").strip().upper(),
@@ -85,14 +108,27 @@ def parse_cfdi(content: bytes):
         "total": root.get("Total") or "",
     }
     if not all(data.values()):
-        return None
+        return None, "missing UUID, issuer RFC, TipoDeComprobante or Total"
+    if not UUID_PATTERN.match(data["uuid"]):
+        return None, "the UUID is not a valid CFDI UUID"
+    if not RFC_PATTERN.match(data["issuer_rfc"]):
+        return None, "the issuer RFC is not a valid RFC"
+
+    concepts = root.findall("cfdi:Conceptos/cfdi:Concepto", NS)
+    if not concepts:
+        return None, "the CFDI has no Concepto"
+    for concept in concepts:
+        if not CLAVE_PROD_SERV_PATTERN.match(concept.get("ClaveProdServ") or ""):
+            return None, "a ClaveProdServ is not an 8-digit SAT code"
+        if not CLAVE_UNIDAD_PATTERN.match(concept.get("ClaveUnidad") or ""):
+            return None, "a ClaveUnidad is not a SAT unit code"
 
     # Free text written by the supplier, the part of the CFDI the agent reads
     texts = [issuer.get("Nombre") or ""]
-    for concept in root.findall("cfdi:Conceptos/cfdi:Concepto", NS):
+    for concept in concepts:
         texts += [concept.get(name) or "" for name in ("Descripcion", "NoIdentificacion", "Unidad")]
     data["supplier_texts"] = list(dict.fromkeys(text.strip() for text in texts if text.strip()))
-    return data
+    return data, None
 
 
 def screen(texts: list) -> tuple:
@@ -230,13 +266,16 @@ def handler(event, context):
 
         outcomes = {"stored": [], "duplicate": [], "conflict": []}
         screening = {}
+        rejected = []
         for part in message.iter_attachments():
             filename = (part.get_filename() or "").lower()
             if not filename.endswith(".xml"):
                 continue
             content = part.get_payload(decode=True)  # always bytes
-            data = parse_cfdi(content)
+            data, reason = parse_cfdi(content)
             if data is None:
+                if reason != "not_cfdi":
+                    rejected.append({"file": filename[:100], "reason": reason})
                 continue
             verdict, filters = screen(data["supplier_texts"])
             outcome = store_invoice(bucket, key, content, data, verdict)
@@ -249,6 +288,8 @@ def handler(event, context):
         summary["conflicts"] = outcomes["conflict"]
         # Invoices sent to review by the guardrail ("flagged" or "unavailable")
         summary["screened_out"] = screening
+        # Files that are CFDI but break a SAT rule; the reason is a fixed text
+        summary["rejected"] = rejected
         if not any(outcomes.values()):
             summary["result"] = "non_invoice"
             summary["moved_to"] = copy_email(bucket, key, "non-invoices/")
