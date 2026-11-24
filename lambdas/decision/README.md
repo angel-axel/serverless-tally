@@ -39,12 +39,12 @@ Output, one JSON log line per record:
 
 | Statement | Actions | Resource |
 |---|---|---|
-| `SendFailedEvents` | `sqs:SendMessage` | The failure queue (Lambda's on-failure destination) |
 | `ReadInvoiceRecord` | `dynamodb:GetItem` | Invoices table |
 | `RecordDecision` | `dynamodb:UpdateItem`, only `uuid`, `status`, `decision_reasons`, `decided_at` | Invoices table |
 | `ReadInvoiceXml` | `s3:GetObject` | `invoices/pending/*` only |
 | `ReadPurchaseOrders` | `dynamodb:GetItem` | Purchase orders table |
 | `RecordInvoicedQuantities` | `dynamodb:UpdateItem`, only `supplier_rfc`, `order_id`, `invoiced_quantities`, `status` | Purchase orders table |
+| `SendFailedEvents` | `sqs:SendMessage` | The failure queue (Lambda's on-failure destination) |
 | `WriteLogs` | `logs:CreateLogStream`, `PutLogEvents` | Its own log group |
 
 ## Configuration

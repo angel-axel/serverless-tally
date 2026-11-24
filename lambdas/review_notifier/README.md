@@ -79,7 +79,7 @@ Attachment: 895C0CFA-9A6A-4827-8057-01CCE59D94B2.xml
 | `SENDER` | Sender address, `review@<domain>` by default |
 | `REVIEW_EMAIL` | Where review emails go |
 
-While the SES account is in the sandbox, SES only delivers to verified addresses. Terraform creates an email identity for `REVIEW_EMAIL`, so SES sends it a verification link once; it must be clicked before the first review email can arrive.
+The sender is authorized by the SES domain identity that already receives the invoices, so no new sending identity is needed. The SES account is out of the sandbox, so `REVIEW_EMAIL` can be any address; if an account were in the sandbox, that address would also have to be verified in SES.
 
 ## Tests
 

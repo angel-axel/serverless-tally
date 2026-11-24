@@ -45,8 +45,8 @@ The dispatcher writes nothing to DynamoDB or S3. The agent records its proposal 
 
 | Statement | Actions | Resource |
 |---|---|---|
-| `SendFailedEvents` | `sqs:SendMessage` | The failure queue (Lambda's on-failure destination) |
 | `InvokeInvoiceMatcherAgent` | `bedrock-agentcore:InvokeHarness`, `InvokeAgentRuntime` | The invoice matcher harness only |
+| `SendFailedEvents` | `sqs:SendMessage` | The failure queue (Lambda's on-failure destination) |
 | `WriteLogs` | `logs:CreateLogStream`, `PutLogEvents` | Its own log group |
 
 The function does not read the stream. A resource-based permission lets only the rule `tally-new-invoice` invoke it.

@@ -289,7 +289,7 @@ variable "review_notifier_log_retention_days" {
 }
 
 variable "review_recipient_email" {
-  description = "Email address that receives the invoices sent to review. While SES is in the sandbox, it must click the verification link SES sends once."
+  description = "Email address that receives the invoices sent to review. If the SES account is ever in the sandbox, this address must be verified in SES as well."
   type        = string
 
   validation {

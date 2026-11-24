@@ -737,13 +737,10 @@ data "aws_iam_policy_document" "review_notifier_lambda_policy" {
   }
 
   statement {
-    sid     = "SendReviewEmail"
-    effect  = "Allow"
-    actions = ["ses:SendRawEmail"]
-    resources = [
-      aws_ses_domain_identity.ses_domain_identity.arn,
-      aws_ses_email_identity.ses_email_identity_review_recipient.arn,
-    ]
+    sid       = "SendReviewEmail"
+    effect    = "Allow"
+    actions   = ["ses:SendRawEmail"]
+    resources = [aws_ses_domain_identity.ses_domain_identity.arn]
 
     condition {
       test     = "StringEquals"

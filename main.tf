@@ -1006,10 +1006,6 @@ resource "aws_lambda_function_event_invoke_config" "lambda_function_event_invoke
   depends_on = [aws_iam_role_policy.iam_role_policy_decision_lambda]
 }
 
-resource "aws_ses_email_identity" "ses_email_identity_review_recipient" {
-  email = var.review_recipient_email
-}
-
 resource "aws_cloudwatch_log_group" "cloudwatch_log_group_review_notifier_lambda" {
   name              = "/aws/lambda/${var.review_notifier_function_name}"
   retention_in_days = var.review_notifier_log_retention_days
