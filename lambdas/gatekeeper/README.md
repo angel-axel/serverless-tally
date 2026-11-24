@@ -13,7 +13,7 @@ Its job is narrow on purpose: take an email that Amazon SES stored in S3, find t
 | Malicious XML cannot crash or leak the system | Python's built-in parser (Expat ≥ 2.6.0) blocks entity-expansion attacks ("billion laughs", "quadratic blowup") and does not resolve external entities. The function refuses to start if the runtime ships an older Expat. Files over 1 MB are rejected before parsing. |
 | An invoice can never be overwritten, including by a forged copy that reuses its UUID | DynamoDB conditional put (`attribute_not_exists(uuid)`): the first record for a UUID is final. S3 conditional write (`If-None-Match: *`): a stored file is never replaced. |
 | A record always describes the exact file it points to | Each XML is stored under its own SHA-256 fingerprint (`invoices/pending/<UUID>/<SHA-256>.xml`), and the record keeps that fingerprint. A forged copy with the same UUID lands in a different file, so a record can never point to an XML with different data. S3 also verifies the fingerprint on upload. |
-| Instructions hidden inside a CFDI never reach the AI agent | The issuer name and each line's `Descripcion`, `NoIdentificacion` and `Unidad` (the free text the agent reads) go through `ApplyGuardrail` with the PROMPT_ATTACK filter. A flagged invoice is registered with status `needs_review` and a fixed reason; the dispatcher only starts the agent for `received`, so the agent never runs on it. |
+| Instructions hidden inside a CFDI never reach the AI agent | The issuer name and each line's `Descripcion`, `NoIdentificacion` and `Unidad` (the free text the agent reads) go through `ApplyGuardrail` with the PROMPT_ATTACK filter and two denied topics (`ProcessingInstructions`, `ApprovalClaims`). A flagged invoice is registered with status `needs_review` and a fixed reason; the dispatcher only starts the agent for `received`, so the agent never runs on it. |
 | If the screening cannot run, a person decides | When the guardrail call fails (throttling, outage) the invoice is also registered as `needs_review`, with a different fixed reason. It is never let through unscreened. |
 | Emails SES flags as spam or virus are not processed | `X-SES-Spam-Verdict` or `X-SES-Virus-Verdict` = `FAIL` → copied to `quarantine/`, nothing else happens. |
 | The gatekeeper can only do its own job | Scoped IAM role (see below). It cannot read invoices, change their status, or write where SES delivers emails. |
@@ -68,7 +68,7 @@ Its job is narrow on purpose: take an email that Amazon SES stored in S3, find t
 {"email": "emails/gp0kp952...", "spam": "PASS", "virus": "PASS", "invoices": ["78BB1591-..."], "duplicates": [], "conflicts": [], "screened_out": {"78BB1591-...": {"guardrail": "flagged", "filters": ["PROMPT_ATTACK"]}}, "result": "processed"}
 ```
 
-`invoices` lists new invoices, `screened_out` those of them that were sent to review by the guardrail (`flagged` or `unavailable`), `duplicates` identical files that were already stored, and `conflicts` files whose UUID was already registered with different content. `result` is one of `processed`, `non_invoice` or `quarantined`.
+`invoices` lists new invoices, `screened_out` those of them that were sent to review by the guardrail (`flagged` or `unavailable`) and what fired (a content filter such as `PROMPT_ATTACK`, or a denied topic's name), `duplicates` identical files that were already stored, and `conflicts` files whose UUID was already registered with different content. `result` is one of `processed`, `non_invoice` or `quarantined`.
 
 ## IAM permissions
 
@@ -117,7 +117,7 @@ python -m unittest discover -s lambdas/gatekeeper/tests -v
 | 14 | A copy of a registered invoice, same UUID, with injected text | Use the screening path to change a registered invoice | Reported as a conflict; the registered invoice is untouched. |
 | 15 | Valid invoice named `Factura.XML`, email key with spaces; the same file sent twice | Normal use (control cases) | Stored and registered with status `received`; the resend is reported as a duplicate and nothing changes. |
 
-All 21 tests pass. The SES → S3 delivery path was also verified end to end with a real email.
+All 22 tests pass. The SES → S3 delivery path was also verified end to end with a real email.
 
 ## Design decisions and what changed during the build
 

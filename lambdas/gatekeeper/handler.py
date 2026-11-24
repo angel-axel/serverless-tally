@@ -57,7 +57,7 @@ MAX_XML_BYTES = 1_000_000  # a real CFDI is a few KB; anything above 1 MB is sus
 OBJECT_EXISTS_ERRORS = ("PreconditionFailed", "ConditionalRequestConflict")
 
 # Fixed texts: a stored reason never repeats what the supplier wrote
-FLAGGED_REASON = "Supplier text in the invoice was flagged by the guardrail as a possible prompt attack; a person must review it."
+FLAGGED_REASON = "Supplier text in the invoice was flagged by the guardrail as a possible prompt attack or processing instruction; a person must review it."
 UNAVAILABLE_REASON = "Supplier text in the invoice could not be screened by the guardrail; a person must review it."
 
 
@@ -112,11 +112,15 @@ def screen(texts: list) -> tuple:
 
     if response.get("action") != "GUARDRAIL_INTERVENED":
         return "clean", []
-    filters = sorted({
-        item.get("type", "UNKNOWN")
-        for assessment in response.get("assessments", [])
-        for item in assessment.get("contentPolicy", {}).get("filters", [])
-    })
+    # Names of what fired: content filters (PROMPT_ATTACK) and denied topics
+    filters = sorted(
+        {item.get("type", "UNKNOWN")
+         for assessment in response.get("assessments", [])
+         for item in assessment.get("contentPolicy", {}).get("filters", [])}
+        | {item.get("name", "UNKNOWN")
+           for assessment in response.get("assessments", [])
+           for item in assessment.get("topicPolicy", {}).get("topics", [])}
+    )
     return "flagged", filters
 
 
