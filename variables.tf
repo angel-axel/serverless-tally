@@ -63,6 +63,28 @@ variable "ses_dns_record_mx_ttl" {
   default     = 600
 }
 
+variable "ses_mail_from_subdomain" {
+  description = "Label prepended to the domain to build the custom MAIL FROM domain (for example 'mail' gives mail.<domain>). Bounces go there, and it makes SPF align with the From domain for DMARC."
+  type        = string
+  default     = "mail"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", var.ses_mail_from_subdomain))
+    error_message = "The MAIL FROM label must be a single DNS label: lowercase letters, digits and hyphens."
+  }
+}
+
+variable "dmarc_policy" {
+  description = "DMARC policy for the domain: what receivers should do with mail that claims to come from it but fails both aligned SPF and aligned DKIM. 'reject' blocks it, 'quarantine' sends it to spam, 'none' only monitors."
+  type        = string
+  default     = "reject"
+
+  validation {
+    condition     = contains(["none", "quarantine", "reject"], var.dmarc_policy)
+    error_message = "The DMARC policy must be none, quarantine or reject."
+  }
+}
+
 variable "ses_rule_set_name" {
   description = "Name of the SES receipt rule set. It becomes the active rule set for the region, replacing any rule set that was active before. Must match the SourceArn condition in the emails bucket policy."
   type        = string

@@ -25,6 +25,8 @@ locals {
 
   review_sender = "${var.review_sender_local_part}@${local.domain}"
 
+  mail_from_domain = "${var.ses_mail_from_subdomain}.${local.domain}"
+
   invoice_matcher_model_ids = distinct([
     for model in data.aws_bedrock_foundation_models.text_models.model_summaries :
     model.model_id if model.model_name == var.invoice_matcher_model_name && length(split(":", model.model_id)) <= 2
@@ -174,6 +176,36 @@ resource "aws_route53_record" "ses_inbound_mx_record" {
   type    = "MX"
   ttl     = var.ses_dns_record_mx_ttl
   records = ["10 inbound-smtp.${data.aws_region.region.region}.amazonaws.com"]
+}
+
+resource "aws_ses_domain_mail_from" "ses_domain_mail_from" {
+  domain                 = aws_ses_domain_identity.ses_domain_identity.domain
+  mail_from_domain       = local.mail_from_domain
+  behavior_on_mx_failure = "UseDefaultValue"
+}
+
+resource "aws_route53_record" "ses_mail_from_mx_record" {
+  zone_id = data.aws_route53_zone.route53_zone.zone_id
+  name    = local.mail_from_domain
+  type    = "MX"
+  ttl     = var.ses_dns_record_mx_ttl
+  records = ["10 feedback-smtp.${data.aws_region.region.region}.amazonses.com"]
+}
+
+resource "aws_route53_record" "ses_mail_from_spf_record" {
+  zone_id = data.aws_route53_zone.route53_zone.zone_id
+  name    = local.mail_from_domain
+  type    = "TXT"
+  ttl     = var.ses_dns_record_txt_ttl
+  records = ["v=spf1 include:amazonses.com -all"]
+}
+
+resource "aws_route53_record" "ses_dmarc_record" {
+  zone_id = data.aws_route53_zone.route53_zone.zone_id
+  name    = "_dmarc.${local.domain}"
+  type    = "TXT"
+  ttl     = var.ses_dns_record_txt_ttl
+  records = ["v=DMARC1; p=${var.dmarc_policy}; adkim=s; aspf=r"]
 }
 
 resource "aws_s3_bucket" "s3_bucket" {
