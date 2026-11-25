@@ -8,10 +8,12 @@ Deterministic check of the agent's proposal. When an invoice moves to `match_pro
 |---|---|
 | The code decides, not the agent | The agent's proposal only says which line goes with which; every number is read again from the stored XML and the order |
 | Only income invoices match automatically | `TipoDeComprobante` must be `I`; credit notes and others go to review |
-| Large invoices need a person | Total at or above `MAX_AUTO_MATCH_TOTAL` (default 10,000) goes to review even if everything else matches. The gatekeeper applies the same limit to the declared total before the agent runs; this check is the second line, on the total of an XML whose every amount has been verified |
+| Large purchases need a person | If the larger of `SubTotal` and `Total` is at or above `MAX_AUTO_MATCH_TOTAL` (default 10,000), the invoice goes to review even if everything else matches. `SubTotal` is the value of the goods before discounts and withholding, so neither can hide the size of a purchase. The gatekeeper applies the same rule to the declared amounts before the agent runs; this is the second line |
 | Prices agree with the order | Unit price within `PRICE_TOLERANCE` (default 0.01) of the agreed price |
 | No more than what was ordered | Invoiced quantity ≤ ordered − already invoiced, per line |
 | The invoice adds up | `Importe = Cantidad × ValorUnitario`; `SubTotal = Σ Importe`; `Total = SubTotal − Descuento + Traslados − Retenciones` (one-cent rounding) |
+| Discounts and taxes in the header are the ones the lines declare | `Descuento = Σ line Descuento`; `TotalImpuestosTrasladados = Σ line Traslado` (one cent per line); each line's IVA base is `Importe − Descuento` and its amount is `base × rate`. Without this, a supplier could inflate the taxes, or shrink the total with a discount, and the arithmetic above would still add up |
+| Only plain IVA is matched automatically | IVA (`Impuesto 002`) at 16%, 8% (border regions) or 0%, or exempt. Any other tax, any other rate, and any withholding (`Retenciones`) send the invoice to a person |
 | Same currency, open order, every line matched | Otherwise `needs_review` |
 | Every problem is reported at once | All reasons are collected in `decision_reasons` |
 | An order cannot be invoiced twice | On `matched`, invoiced quantities are added to the order in the same transaction, with an optimistic-lock condition on the order |
@@ -64,7 +66,7 @@ pip install -r lambdas/decision/tests/requirements.txt
 python -m unittest discover -s lambdas/decision/tests -v
 ```
 
-24 tests (moto): matching invoice recorded on the order; order closed when fully invoiced; rounding within tolerance; a total above the automatic limit goes to review and one at the limit matches; review for price above agreed, quantity above pending, line amount, total, unmatched line, no order, credit note, currency, closed order; all reasons reported together; a wrong pairing by the agent is caught; the same order cannot be invoiced twice; an order changed mid-decision is retried (with and without existing quantities) and then reviewed; a retry after a decision changes nothing; other stream events ignored; XML of another invoice; unreadable XML; shared `cfdi.py` identical. All pass.
+33 tests (moto): matching invoice recorded on the order; order closed when fully invoiced; rounding within tolerance; a total at the automatic limit goes to review and one cent below matches; a large purchase hidden by a discount goes to review; withholding, header taxes the lines do not declare, line IVA that is not base × rate, a rate that does not exist, a tax other than IVA and a header discount the lines do not declare all go to review; 8% border IVA matches; review for price above agreed, quantity above pending, line amount, total, unmatched line, no order, credit note, currency, closed order; all reasons reported together; a wrong pairing by the agent is caught; the same order cannot be invoiced twice; an order changed mid-decision is retried (with and without existing quantities) and then reviewed; a retry after a decision changes nothing; other stream events ignored; XML of another invoice; unreadable XML; shared `cfdi.py` identical. All pass.
 
 ## Design decisions
 

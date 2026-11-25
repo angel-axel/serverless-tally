@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Invoice to review: $uuid</title>
+</head>
+<body style="margin:0;padding:0;background-color:#f3f4f6;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#f3f4f6;font-size:1px;line-height:1px;">An invoice from $rfc for $total needs review before any payment.</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f3f4f6;">
+  <tr>
+    <td align="center" style="padding:32px 16px;">
+      <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:600px;background-color:#ffffff;border:1px solid #e5e7eb;border-radius:8px;">
+        <tr>
+          <td style="padding:24px 32px 0 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <p style="margin:0;font-size:13px;font-weight:600;letter-spacing:0.04em;color:#6b7280;">TALLY</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:12px 32px 0 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <span style="display:inline-block;padding:4px 10px;border-radius:999px;background-color:#fef3c7;color:#92400e;font-size:12px;font-weight:600;">Needs review</span>
+            <h1 style="margin:12px 0 8px 0;font-size:22px;line-height:1.3;font-weight:600;color:#111827;">An invoice needs your review</h1>
+            <p style="margin:0;font-size:15px;line-height:1.6;color:#374151;">Tally stopped it before any payment. Review it and decide what to do with it.</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px 32px 0 32px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:6px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;">
+              <tr>
+                <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;color:#6b7280;width:120px;">Total</td>
+                <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;color:#111827;font-size:18px;font-weight:600;">$total</td>
+              </tr>
+              <tr>
+                <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;color:#6b7280;">Supplier RFC</td>
+                <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;color:#111827;font-family:Menlo,Consolas,monospace;">$rfc</td>
+              </tr>
+              <tr>
+                <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;color:#6b7280;">UUID</td>
+                <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;color:#111827;font-family:Menlo,Consolas,monospace;font-size:13px;word-break:break-all;">$uuid</td>
+              </tr>
+              <tr>
+                <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;color:#6b7280;">Received</td>
+                <td style="padding:12px 16px;border-bottom:1px solid #e5e7eb;color:#111827;">$received</td>
+              </tr>
+              <tr>
+                <td style="padding:12px 16px;color:#6b7280;">Flagged</td>
+                <td style="padding:12px 16px;color:#111827;">$flagged</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px 32px 0 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <div style="border:1px solid #f59e0b;border-radius:8px;background-color:#fffbeb;padding:16px 18px;">
+              <h2 style="margin:0 0 10px 0;font-size:15px;font-weight:600;color:#111827;">Why it was stopped</h2>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+$reasons
+              </table>
+              <p style="margin:16px 0 8px 0;font-size:13px;font-weight:600;color:#111827;">Invoice lines, as written by the supplier (unverified)</p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+$supplier_lines
+              </table>
+              <p style="margin:14px 0 0 0;padding:10px 12px;border:1px solid #fecaca;border-radius:6px;background-color:#fee2e2;font-size:13px;line-height:1.6;color:#991b1b;">
+                <strong>Be careful with supplier text.</strong> Text in quotes comes from the supplier's invoice and has not been verified. Phrases such as "URGENT", "pre-approved", "authorized by the owner" or "no review needed" may be social engineering or an attempt to deceive you. Tally never approves an invoice on the supplier's word, and this email never contains links: do not open any link that appears inside supplier text.
+              </p>
+            </div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px 32px 0 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#eff6ff;border-radius:6px;">
+              <tr>
+                <td style="padding:14px 16px;font-size:13px;line-height:1.6;color:#1e3a8a;">
+                  <strong>Attached:</strong> <span style="font-family:Menlo,Consolas,monospace;">$uuid.xml</span>, exactly as it was received. Open it in a text editor, not in a web browser.
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:24px 32px 28px 32px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+            <p style="margin:0;padding-top:16px;border-top:1px solid #e5e7eb;font-size:12px;line-height:1.6;color:#9ca3af;">
+              Tally sends this notice automatically. It does not read replies, contains no links, and will never ask you for information or payments by email.
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+</body>
+</html>

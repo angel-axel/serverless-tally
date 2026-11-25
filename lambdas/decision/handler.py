@@ -41,12 +41,62 @@ MAX_AUTO_MATCH_TOTAL = Decimal(os.environ.get("MAX_AUTO_MATCH_TOTAL", "10000"))
 # CFDI amounts are rounded to cents; allow one cent per comparison
 ROUNDING = Decimal("0.01")
 
+# IVA rates a Mexican supplier may charge (Impuesto 002, TipoFactor Tasa)
+IVA = "002"
+IVA_RATES = {Decimal("0.16"), Decimal("0.08"), Decimal("0")}
+
 serializer = TypeSerializer()
 
 
 def av(value):
     """Python value -> DynamoDB AttributeValue (for the low-level transaction API)."""
     return serializer.serialize(value)
+
+
+def check_discounts_and_taxes(cfdi: dict) -> list[str]:
+    """The header's discount and taxes must be the sum of what each line declares,
+    and each line's taxes must be computed correctly at an allowed IVA rate.
+    Without this, a supplier could inflate the taxes, or hide the size of a
+    purchase behind a discount or withholding, with arithmetic that still adds up."""
+    reasons = []
+    lines = cfdi["lines"]
+    tolerance = ROUNDING * max(1, len(lines))  # each line's tax is rounded on its own
+
+    line_discounts = sum((line["discount"] for line in lines), Decimal("0"))
+    if abs(line_discounts - cfdi["discount"]) > ROUNDING:
+        reasons.append(f"Descuento {cfdi['discount']} differs from the sum of the line discounts {line_discounts}.")
+
+    line_transferred = sum(
+        (tax["amount"] for line in lines for tax in line["taxes"]["transferred"]), Decimal("0"))
+    if abs(line_transferred - cfdi["transferred_taxes"]) > tolerance:
+        reasons.append(
+            f"TotalImpuestosTrasladados {cfdi['transferred_taxes']} differs from the sum of the line taxes "
+            f"{line_transferred}.")
+
+    line_withheld = sum((tax["amount"] for line in lines for tax in line["taxes"]["withheld"]), Decimal("0"))
+    if cfdi["withheld_taxes"] or line_withheld:
+        reasons.append(
+            f"The invoice withholds taxes ({max(cfdi['withheld_taxes'], line_withheld)}); "
+            "a person must review it.")
+
+    for line in lines:
+        net = line["amount"] - line["discount"]
+        for tax in line["taxes"]["transferred"]:
+            label = f"Invoice line {line['line']}"
+            if tax["tax"] != IVA:
+                reasons.append(f"{label}: tax {tax['tax']!r} is not IVA; a person must review it.")
+                continue
+            if tax["factor"] == "Exento":
+                continue
+            if tax["factor"] != "Tasa" or tax["rate"] not in IVA_RATES:
+                reasons.append(f"{label}: IVA {tax['factor']} {tax['rate']} is not an allowed rate.")
+                continue
+            if abs(tax["base"] - net) > ROUNDING:
+                reasons.append(f"{label}: IVA base {tax['base']} differs from Importe - Descuento = {net}.")
+            expected = (tax["base"] * tax["rate"]).quantize(ROUNDING)
+            if abs(expected - tax["amount"]) > ROUNDING:
+                reasons.append(f"{label}: IVA {tax['amount']} differs from base x rate = {expected}.")
+    return reasons
 
 
 def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
@@ -61,12 +111,14 @@ def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
     if cfdi["type"] != "I":
         reasons.append(f"Invoice type is {cfdi['type']!r}; only income invoices (I) are matched automatically.")
 
-    # The gatekeeper applies the same limit to the declared total; this check
-    # uses the total of the XML after every amount in it has been verified
-    if cfdi["total"] >= MAX_AUTO_MATCH_TOTAL:
+    # The limit measures the size of the purchase: the larger of SubTotal (the
+    # goods before discounts and withholding) and Total. The gatekeeper applies
+    # the same rule to the declared amounts; the checks below verify them.
+    amount = max(cfdi["subtotal"], cfdi["total"])
+    if amount >= MAX_AUTO_MATCH_TOTAL:
         reasons.append(
-            f"Total {cfdi['total']} is at or above the automatic matching limit {MAX_AUTO_MATCH_TOTAL}; "
-            "a person must review it.")
+            f"Invoice amount {amount} (the larger of SubTotal and Total) is at or above the automatic "
+            f"matching limit {MAX_AUTO_MATCH_TOTAL}; a person must review it.")
 
     if order is None:
         reasons.append("No open purchase order was matched to this invoice.")
@@ -84,6 +136,7 @@ def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
     if abs(expected_total - cfdi["total"]) > ROUNDING:
         reasons.append(
             f"Total {cfdi['total']} differs from SubTotal - Descuento + taxes = {expected_total}.")
+    reasons += check_discounts_and_taxes(cfdi)
 
     # --- Line by line ----------------------------------------------------------
     invoice_lines = {line["line"]: line for line in cfdi["lines"]}
@@ -99,7 +152,9 @@ def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
         if line is None:
             continue
         if pair.get("order_line") is None:
-            reasons.append(f"Invoice line {number} ({line['description'][:60]}) has no matching order line.")
+            # Never copy supplier text into a reason: reasons reach the reviewer's email.
+            # The notifier shows the line descriptions apart, marked as supplier text.
+            reasons.append(f"Invoice line {number} has no matching order line.")
             continue
         order_line = order_lines.get(int(pair["order_line"]))
         if order_line is None:

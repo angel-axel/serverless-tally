@@ -136,7 +136,7 @@ class ReadInvoiceTest(unittest.TestCase):
 
     def test_shared_cfdi_module_copies_are_identical(self):
         source = os.path.join(LAMBDAS_DIR, "read_invoice", "cfdi.py")
-        for folder in ("propose_match", "decision"):
+        for folder in ("propose_match", "decision", "review_notifier"):
             copy = os.path.join(LAMBDAS_DIR, folder, "cfdi.py")
             self.assertTrue(filecmp.cmp(source, copy, shallow=False), f"{folder}/cfdi.py differs")
 

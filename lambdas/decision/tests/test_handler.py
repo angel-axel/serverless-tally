@@ -36,19 +36,44 @@ RFC = "EKU9003173C9"
 
 
 def cfdi(uuid=UUID, oil=("5", "200.00", "1000.00"), antifreeze=("4", "150.00", "600.00"),
-         total=None, kind="I", currency="MXN"):
-    subtotal = Decimal(oil[2]) + Decimal(antifreeze[2])
-    taxes = (subtotal * Decimal("0.16")).quantize(Decimal("0.01"))
-    total = total or str(subtotal + taxes)
+         total=None, kind="I", currency="MXN", subtotal=None, root_taxes=None, line_tax=None,
+         rate="0.160000", tax="002", discount=None, withheld=None):
+    """A CFDI with IVA declared on each line, as a real one has.
+
+    line_tax overrides the IVA of the first line; discount (on the first line)
+    and withheld (an ISR retention on the first line) are optional.
+    """
+    lines = [(oil, "LTO MULTIGRADO QS 25W-50 1L"), (antifreeze, "ANTICONG VERDE BARDAHL GAL")]
+    concepts, line_sum, tax_sum, disc_sum = [], Decimal("0"), Decimal("0"), Decimal("0")
+    for index, ((quantity, price, amount), description) in enumerate(lines):
+        d = Decimal(discount) if (discount and index == 0) else Decimal("0")
+        base = Decimal(amount) - d
+        iva = (base * Decimal(rate)).quantize(Decimal("0.01"))
+        if index == 0 and line_tax is not None:
+            iva = Decimal(line_tax)
+        retention = (f'<cfdi:Retenciones><cfdi:Retencion Base="{base}" Impuesto="001" TipoFactor="Tasa" '
+                     f'TasaOCuota="0.100000" Importe="{withheld}"/></cfdi:Retenciones>') if (withheld and index == 0) else ""
+        disc_attr = f' Descuento="{d}"' if d else ""
+        concepts.append(
+            f'<cfdi:Concepto Cantidad="{quantity}" Descripcion="{description}" ValorUnitario="{price}" '
+            f'Importe="{amount}"{disc_attr}><cfdi:Impuestos><cfdi:Traslados><cfdi:Traslado Base="{base}" '
+            f'Impuesto="{tax}" TipoFactor="Tasa" TasaOCuota="{rate}" Importe="{iva}"/></cfdi:Traslados>'
+            f'{retention}</cfdi:Impuestos></cfdi:Concepto>')
+        line_sum += Decimal(amount); tax_sum += iva; disc_sum += d
+    subtotal = subtotal or str(line_sum)
+    taxes = root_taxes or str(tax_sum)
+    held = Decimal(withheld) if withheld else Decimal("0")
+    total = total or str(Decimal(subtotal) - disc_sum + Decimal(taxes) - held)
+    disc_root = f' Descuento="{disc_sum}"' if disc_sum else ""
+    held_root = f' TotalImpuestosRetenidos="{held}"' if held else ""
     return f'''<?xml version="1.0" encoding="UTF-8"?>
 <cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4" xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital"
-  Version="4.0" TipoDeComprobante="{kind}" Moneda="{currency}" SubTotal="{subtotal}" Total="{total}">
+  Version="4.0" TipoDeComprobante="{kind}" Moneda="{currency}" SubTotal="{subtotal}"{disc_root} Total="{total}">
   <cfdi:Emisor Rfc="{RFC}" Nombre="REFACCIONES DEL SUR"/>
   <cfdi:Conceptos>
-    <cfdi:Concepto Cantidad="{oil[0]}" Descripcion="LTO MULTIGRADO QS 25W-50 1L" ValorUnitario="{oil[1]}" Importe="{oil[2]}"/>
-    <cfdi:Concepto Cantidad="{antifreeze[0]}" Descripcion="ANTICONG VERDE BARDAHL GAL" ValorUnitario="{antifreeze[1]}" Importe="{antifreeze[2]}"/>
+    {"".join(concepts)}
   </cfdi:Conceptos>
-  <cfdi:Impuestos TotalImpuestosTrasladados="{taxes}"/>
+  <cfdi:Impuestos{held_root} TotalImpuestosTrasladados="{taxes}"/>
   <cfdi:Complemento><tfd:TimbreFiscalDigital UUID="{uuid}"/></cfdi:Complemento>
 </cfdi:Comprobante>'''.encode()
 
@@ -177,7 +202,10 @@ class DecisionTest(unittest.TestCase):
     def test_unmatched_line(self):
         self.propose(cfdi(), proposal={**PROPOSAL, "lines": [{"invoice_line": 1, "order_line": 2},
                                                               {"invoice_line": 2, "order_line": None}]})
-        self.assert_review(self.decide(), "has no matching order line")
+        result = self.decide()
+        self.assert_review(result, "Invoice line 2 has no matching order line.")
+        # Supplier text never goes into a reason: reasons reach the reviewer's email
+        self.assertNotIn("ANTICONG", " ".join(result["reasons"]))
 
     def test_no_order(self):
         self.propose(cfdi(), proposal={"order_id": None, "lines": [
@@ -212,6 +240,47 @@ class DecisionTest(unittest.TestCase):
         with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1856.01")):
             self.propose(cfdi())
             self.assertEqual(self.decide()["result"], "matched")
+
+    # --- discounts, withholding and taxes: the size of the purchase ---------
+
+    def test_large_purchase_hidden_by_a_discount_goes_to_review(self):
+        """Live test case 5: goods worth 19,968 with a 12,000 discount, Total 9,242.88."""
+        with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1500")):
+            self.propose(cfdi(discount="1000.00"))  # SubTotal 1600, Total 696
+            self.assert_review(self.decide(), "the larger of SubTotal and Total")
+
+    def test_withheld_taxes_go_to_review(self):
+        """Live test case 4: an absurd withholding made the Total small with consistent arithmetic."""
+        self.propose(cfdi(withheld="100.00"))
+        self.assert_review(self.decide(), "withholds taxes")
+
+    def test_inflated_header_taxes_go_to_review(self):
+        """Taxes in the header that the lines do not declare would make the business overpay."""
+        self.propose(cfdi(root_taxes="5000.00"))
+        self.assert_review(self.decide(), "TotalImpuestosTrasladados 5000.00 differs from the sum of the line taxes")
+
+    def test_line_iva_not_equal_to_base_times_rate_goes_to_review(self):
+        self.propose(cfdi(line_tax="400.00", root_taxes="496.00"))
+        self.assert_review(self.decide(), "IVA 400.00 differs from base x rate = 160.00")
+
+    def test_iva_rate_that_does_not_exist_goes_to_review(self):
+        self.propose(cfdi(rate="0.500000"))
+        self.assert_review(self.decide(), "is not an allowed rate")
+
+    def test_tax_other_than_iva_goes_to_review(self):
+        self.propose(cfdi(tax="003"))
+        self.assert_review(self.decide(), "is not IVA")
+
+    def test_reduced_border_iva_rate_matches(self):
+        """8% IVA is legal in the northern and southern border regions."""
+        self.propose(cfdi(rate="0.080000"))
+        self.assertEqual(self.decide()["result"], "matched")
+
+    def test_header_discount_that_the_lines_do_not_declare_goes_to_review(self):
+        content = cfdi().replace(b'SubTotal="1600.00"', b'SubTotal="1600.00" Descuento="500.00"').replace(
+            b'Total="1856.00"', b'Total="1356.00"')
+        self.propose(content)
+        self.assert_review(self.decide(), "Descuento 500.00 differs from the sum of the line discounts 0")
 
     def test_all_reasons_are_reported_together(self):
         self.propose(cfdi(oil=("12", "210.00", "2520.00")))

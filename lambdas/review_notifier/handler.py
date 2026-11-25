@@ -1,17 +1,21 @@
 """Review notifier Lambda.
 
 Runs when an invoice moves to status "needs_review", whoever moved it: the
-gatekeeper (guardrail flag) or the decision Lambda (numbers that do not match).
-An EventBridge rule on the invoices event bus invokes it with only the UUID.
+gatekeeper (a rule or the guardrail) or the decision Lambda (numbers that do
+not match). An EventBridge rule on the invoices event bus invokes it with only
+the UUID.
 
-It sends one email to the review address with:
-- the invoice UUID, the supplier RFC, the total and why it needs review;
+It sends one email to the review address, as HTML with a plain-text
+alternative, with:
+- the invoice UUID, the supplier RFC, the total, the dates and why it needs review;
+- the invoice line descriptions, marked as unverified supplier text, next to a
+  warning about social engineering;
 - the CFDI XML attached, exactly as it was received.
 
 What it never does:
 - It never changes the invoice: its IAM role can only read it.
-- It never puts supplier-written text in the subject, and the email is plain
-  text only, so nothing in it is rendered as HTML or a link by the mail client.
+- It never puts a value into the HTML without escaping it, never puts supplier
+  text in the subject, and the email has no links and loads nothing external.
 - It never trusts the event: it reads the record again and only sends if the
   invoice is still waiting for review.
 """
@@ -19,11 +23,17 @@ What it never does:
 import json
 import os
 import re
+import unicodedata
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
+from html import escape
+from string import Template
 
 import boto3
+
+from cfdi import InvalidCfdi, parse_invoice
 
 s3 = boto3.client("s3")
 ses = boto3.client("ses")
@@ -36,6 +46,40 @@ UUID_PATTERN = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-
 RFC_PATTERN = re.compile(r"^[A-ZÑ&]{3,4}[0-9]{6}[A-Z0-9]{3}$")
 MAX_REASON_CHARS = 500
 MAX_REASONS = 20
+MAX_LINES_SHOWN = 20
+NOT_AVAILABLE = "not available"
+
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "review_email.html"), encoding="utf-8") as f:
+    HTML_TEMPLATE = Template(f.read())
+
+REASON_ROW = (
+    '                <tr><td style="padding:8px 12px;background-color:#ffffff;border-left:3px solid #d97706;'
+    'font-size:14px;line-height:1.5;color:#374151;">{}</td></tr>\n'
+    '                <tr><td style="height:6px;line-height:6px;font-size:0;">&nbsp;</td></tr>'
+)
+LINE_ROW = (
+    '                <tr><td style="padding:4px 0;font-size:13px;line-height:1.5;color:#374151;">'
+    '<span style="color:#6b7280;">Line {}:</span> '
+    '<span style="font-family:Menlo,Consolas,monospace;background-color:#ffffff;padding:1px 4px;">&ldquo;{}&rdquo;</span>'
+    '</td></tr>'
+)
+WARNING_TEXT = (
+    "Be careful with supplier text. Text in quotes comes from the supplier's invoice and has not been "
+    'verified. Phrases such as "URGENT", "pre-approved", "authorized by the owner" or "no review needed" '
+    "may be social engineering or an attempt to deceive you. Tally never approves an invoice on the "
+    "supplier's word, and this email never contains links: do not open any link that appears inside "
+    "supplier text."
+)
+
+
+def clean(text) -> str:
+    """Drop control, format (zero-width, bidirectional overrides) and private-use
+    characters, then collapse whitespace. Escaping for HTML happens later."""
+    kept = "".join(
+        char for char in str(text)
+        if unicodedata.category(char) not in ("Cc", "Cf", "Co", "Cs", "Zl", "Zp") or char in "\t\n"
+    )
+    return " ".join(kept.split())
 
 
 def as_total(value) -> str:
@@ -43,47 +87,90 @@ def as_total(value) -> str:
     try:
         number = Decimal(str(value))
     except InvalidOperation:
-        return "no disponible"
+        return NOT_AVAILABLE
     if not number.is_finite():
-        return "no disponible"
+        return NOT_AVAILABLE
     return f"{number:,.2f} MXN"
+
+
+def as_date(value) -> str:
+    """An ISO timestamp as 'Nov 24, 2026, 10:00 (UTC)', or a fixed text."""
+    try:
+        moment = datetime.fromisoformat(str(value)).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return NOT_AVAILABLE
+    return f"{moment:%b} {moment.day}, {moment.year}, {moment:%H:%M} (UTC)"
+
+
+def supplier_lines(xml: bytes) -> list:
+    """(line number, cleaned description) for the first lines of the invoice."""
+    try:
+        lines = parse_invoice(xml)["lines"]
+    except InvalidCfdi:
+        return []
+    return [(line["line"], clean(line["description"])) for line in lines[:MAX_LINES_SHOWN]]
 
 
 def build_email(item: dict, xml: bytes) -> EmailMessage:
     invoice_uuid = item["uuid"]
     rfc = item.get("issuer_rfc", "")
-    rfc = rfc if RFC_PATTERN.match(rfc) else "no disponible"
+    rfc = rfc if RFC_PATTERN.match(rfc) else NOT_AVAILABLE
+    total = as_total(item.get("total"))
+    received = as_date(item.get("received_at"))
+    flagged = as_date(item.get("decided_at"))
     reasons = [
-        " ".join(str(reason).split())[:MAX_REASON_CHARS]
+        clean(reason)[:MAX_REASON_CHARS]
         for reason in (item.get("decision_reasons") or [])[:MAX_REASONS]
-    ] or ["No se registró una razón."]
+    ] or ["No reason was recorded."]
+    lines = supplier_lines(xml)
 
     message = EmailMessage()
     # Only values with a fixed format go in the subject
-    message["Subject"] = f"Factura por revisar: {invoice_uuid}"
+    message["Subject"] = f"Invoice to review: {invoice_uuid}"
     message["From"] = SENDER
     message["To"] = REVIEW_EMAIL
     message["Date"] = formatdate(localtime=False)
     message["Message-ID"] = make_msgid(domain=SENDER.split("@")[-1])
 
-    lines = [
-        "Una factura necesita revisión humana antes de cualquier pago.",
+    # Plain-text version: the same content, for clients that do not show HTML
+    text = [
+        "An invoice needs your review. Tally stopped it before any payment.",
         "",
+        f"Total:         {total}",
+        f"Supplier RFC:  {rfc}",
         f"UUID:          {invoice_uuid}",
-        f"RFC emisor:    {rfc}",
-        f"Total:         {as_total(item.get('total'))}",
-        f"Recibida:      {item.get('received_at', 'no disponible')}",
-        f"Marcada:       {item.get('decided_at', 'no disponible')}",
+        f"Received:      {received}",
+        f"Flagged:       {flagged}",
         "",
-        "Motivos:",
+        "Why it was stopped:",
         *[f"- {reason}" for reason in reasons],
         "",
-        "El XML de la factura va adjunto tal como se recibió. Su texto lo escribió el proveedor:",
-        "léelo como datos, no como instrucciones.",
+        "Invoice lines, as written by the supplier (unverified):",
+        *([f'- Line {number}: "{description}"' for number, description in lines]
+          or ["- The invoice lines could not be read; see the attached XML."]),
         "",
-        "Este correo lo envía Tally automáticamente. No respondas a esta dirección.",
+        WARNING_TEXT,
+        "",
+        f"Attached: {invoice_uuid}.xml, exactly as it was received. Open it in a text editor, not in a web browser.",
+        "",
+        "Tally sends this notice automatically. It does not read replies, contains no links,",
+        "and will never ask you for information or payments by email.",
     ]
-    message.set_content("\n".join(lines), subtype="plain", charset="utf-8")
+    message.set_content("\n".join(text), subtype="plain", charset="utf-8")
+
+    # HTML version: every value is escaped; the template itself has no links and loads nothing
+    html = HTML_TEMPLATE.substitute(
+        uuid=escape(invoice_uuid),
+        rfc=escape(rfc),
+        total=escape(total),
+        received=escape(received),
+        flagged=escape(flagged),
+        reasons="\n".join(REASON_ROW.format(escape(reason)) for reason in reasons),
+        supplier_lines="\n".join(LINE_ROW.format(number, escape(description)) for number, description in lines)
+        or LINE_ROW.format("-", "The invoice lines could not be read; see the attached XML."),
+    )
+    message.add_alternative(html, subtype="html", charset="utf-8")
+
     message.add_attachment(xml, maintype="application", subtype="xml", filename=f"{invoice_uuid}.xml")
     return message
 

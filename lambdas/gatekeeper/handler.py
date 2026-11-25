@@ -20,10 +20,11 @@ What it does:
   and SAT catalog codes in ``ClaveProdServ`` and ``ClaveUnidad``. Those codes
   reach the agent, and a code is checked by its format, not by the guardrail.
 - Sends to review, without screening it or running the agent, every invoice
-  whose declared total is at or above ``MAX_AUTO_MATCH_TOTAL`` or whose currency
-  is not MXN. The decision Lambda applies the same limit to the total it
-  recomputes from the lines, so a low declared total cannot sneak a large
-  invoice through.
+  whose declared amount (the larger of SubTotal and Total) is at or above
+  ``MAX_AUTO_MATCH_TOTAL``, or whose currency is not MXN. Using SubTotal too
+  means a discount or a withholding cannot hide the size of a purchase. The
+  decision Lambda applies the same rule after verifying every amount, so a
+  declared amount that lies is still caught.
 - Copies emails without any CFDI to ``non-invoices/``.
 
 Every decision here is deterministic, except the guardrail's classification,
@@ -73,6 +74,8 @@ CLAVE_PROD_SERV_PATTERN = re.compile(r"^[0-9]{8}$")
 CLAVE_UNIDAD_PATTERN = re.compile(r"^[A-Z0-9]{1,3}$")
 AMOUNT_PATTERN = re.compile(r"^[0-9]{1,15}(\.[0-9]{1,6})?$")
 CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
+# SAT catalog c_TipoDeComprobante: income, credit note, transfer, payroll, payment
+VOUCHER_TYPES = {"I", "E", "T", "N", "P"}
 
 # Errors S3 returns when a conditional write finds the object already there
 OBJECT_EXISTS_ERRORS = ("PreconditionFailed", "ConditionalRequestConflict")
@@ -123,8 +126,13 @@ def parse_cfdi(content: bytes):
         return None, "the UUID is not a valid CFDI UUID"
     if not RFC_PATTERN.match(data["issuer_rfc"]):
         return None, "the issuer RFC is not a valid RFC"
+    if data["type"] not in VOUCHER_TYPES:
+        return None, "the TipoDeComprobante is not a SAT voucher type"
     if not AMOUNT_PATTERN.match(data["total"]):
         return None, "the Total is not a valid amount"
+    data["subtotal"] = (root.get("SubTotal") or "").strip()
+    if not AMOUNT_PATTERN.match(data["subtotal"]):
+        return None, "the SubTotal is not a valid amount"
     data["currency"] = (root.get("Moneda") or "").strip().upper()
     if not CURRENCY_PATTERN.match(data["currency"]):
         return None, "the Moneda is not a currency code"
@@ -147,17 +155,18 @@ def parse_cfdi(content: bytes):
 
 
 def review_rule(data: dict):
-    """Return a fixed reason if a rule sends this invoice straight to a person, else None.
+    """Return (rule, fixed reason) if a rule sends this invoice straight to a person, else (None, None).
 
-    The total is the one the supplier declares; the decision Lambda checks the
-    same limit again against the total it recomputes from the lines.
+    The amounts are the ones the supplier declares; the decision Lambda applies
+    the same limit again after verifying them against the lines.
     """
     if data["currency"] != "MXN":
         return "currency", CURRENCY_REASON
-    if Decimal(data["total"]) >= MAX_AUTO_MATCH_TOTAL:
+    amount = max(Decimal(data["subtotal"]), Decimal(data["total"]))
+    if amount >= MAX_AUTO_MATCH_TOTAL:
         return "total_limit", (
-            f"Total {data['total']} MXN is at or above the automatic matching limit "
-            f"{MAX_AUTO_MATCH_TOTAL}; a person must review it.")
+            f"Invoice amount {amount} MXN (the larger of SubTotal and Total) is at or above the "
+            f"automatic matching limit {MAX_AUTO_MATCH_TOTAL}; a person must review it.")
     return None, None
 
 

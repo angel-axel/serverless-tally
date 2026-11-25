@@ -1,4 +1,4 @@
-"""CFDI 4.0 parsing shared by read_invoice, propose_match and decision.
+"""CFDI 4.0 parsing shared by read_invoice, propose_match, decision and review_notifier.
 
 The same file is copied into each of those Lambda folders, so every package
 stays self-contained (no layers). A test in each folder checks that its copy is
@@ -41,6 +41,26 @@ def _decimal(value, field, required=True):
     if not number.is_finite() or number < 0:
         raise InvalidCfdi(f"invalid number in {field}")
     return number
+
+
+def _taxes(concept, number):
+    """The transferred and withheld taxes declared on one line."""
+    def read(path, kind):
+        found = []
+        for tax in concept.findall(path, NS):
+            label = f"line {number} {kind}"
+            found.append({
+                "tax": tax.get("Impuesto") or "",
+                "factor": tax.get("TipoFactor") or "",
+                "base": _decimal(tax.get("Base"), f"{label} Base"),
+                "rate": _decimal(tax.get("TasaOCuota"), f"{label} TasaOCuota", required=False),
+                "amount": _decimal(tax.get("Importe"), f"{label} Importe", required=False),
+            })
+        return found
+    return {
+        "transferred": read("cfdi:Impuestos/cfdi:Traslados/cfdi:Traslado", "Traslado"),
+        "withheld": read("cfdi:Impuestos/cfdi:Retenciones/cfdi:Retencion", "Retencion"),
+    }
 
 
 def _text(value):
@@ -102,6 +122,7 @@ def parse_invoice(content: bytes) -> dict:
             "unit_price": _decimal(concept.get("ValorUnitario"), f"line {number} ValorUnitario"),
             "amount": _decimal(concept.get("Importe"), f"line {number} Importe"),
             "discount": _decimal(concept.get("Descuento"), f"line {number} Descuento", required=False),
+            "taxes": _taxes(concept, number),
         })
 
     header["lines"] = lines
