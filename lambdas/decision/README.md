@@ -32,7 +32,7 @@ Output, one JSON log line per record:
 
 ```json
 {"invoice": "2D8A4E6F-1B3C-4A5D-9E7F-6C0B8A2D4E13", "result": "needs_review",
- "reasons": ["Invoice line 1 / order line 2: unit price 215.00 differs from the agreed price 200.00."]}
+ "reasons": ["Invoice line 1 / order line 2: unit price 215.00 differs from the agreed price 200.00 (15.00 more)."]}
 ```
 
 `result` is `matched`, `needs_review`, `skipped_not_pending` or `skipped_already_decided`.

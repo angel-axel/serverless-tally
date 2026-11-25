@@ -193,11 +193,11 @@ class DecisionTest(unittest.TestCase):
 
     def test_line_amount_does_not_add_up(self):
         self.propose(cfdi(oil=("5", "200.00", "1100.00")))
-        self.assert_review(self.decide(), "differs from Cantidad x ValorUnitario")
+        self.assert_review(self.decide(), "the line amount is")
 
     def test_total_does_not_add_up(self):
         self.propose(cfdi(total="9999.00"))
-        self.assert_review(self.decide(), "Total 9999.00 differs")
+        self.assert_review(self.decide(), "declares a total of 9999.00")
 
     def test_unmatched_line(self):
         self.propose(cfdi(), proposal={**PROPOSAL, "lines": [{"invoice_line": 1, "order_line": 2},
@@ -228,13 +228,13 @@ class DecisionTest(unittest.TestCase):
     def test_large_invoice_always_goes_to_review(self):
         with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1000")):
             self.propose(cfdi())  # total 1856.00, everything else matches
-            self.assert_review(self.decide(), "at or above the automatic matching limit 1000")
+            self.assert_review(self.decide(), "at or above the automatic matching limit of 1000")
 
     def test_invoice_exactly_at_the_limit_goes_to_review(self):
         """The limit is inclusive: a total equal to it needs a person, as in the gatekeeper."""
         with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1856.00")):
             self.propose(cfdi())
-            self.assert_review(self.decide(), "at or above the automatic matching limit 1856.00")
+            self.assert_review(self.decide(), "at or above the automatic matching limit of 1856.00")
 
     def test_invoice_one_cent_below_the_limit_matches(self):
         with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1856.01")):
@@ -247,29 +247,29 @@ class DecisionTest(unittest.TestCase):
         """Live test case 5: goods worth 19,968 with a 12,000 discount, Total 9,242.88."""
         with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1500")):
             self.propose(cfdi(discount="1000.00"))  # SubTotal 1600, Total 696
-            self.assert_review(self.decide(), "the larger of SubTotal and Total")
+            self.assert_review(self.decide(), "the larger of its subtotal and total")
 
     def test_withheld_taxes_go_to_review(self):
         """Live test case 4: an absurd withholding made the Total small with consistent arithmetic."""
         self.propose(cfdi(withheld="100.00"))
-        self.assert_review(self.decide(), "withholds taxes")
+        self.assert_review(self.decide(), "in taxes; a person must review it")
 
     def test_inflated_header_taxes_go_to_review(self):
         """Taxes in the header that the lines do not declare would make the business overpay."""
         self.propose(cfdi(root_taxes="5000.00"))
-        self.assert_review(self.decide(), "TotalImpuestosTrasladados 5000.00 differs from the sum of the line taxes")
+        self.assert_review(self.decide(), "The header declares 5000.00 in taxes, but the line taxes add up to")
 
     def test_line_iva_not_equal_to_base_times_rate_goes_to_review(self):
         self.propose(cfdi(line_tax="400.00", root_taxes="496.00"))
-        self.assert_review(self.decide(), "IVA 400.00 differs from base x rate = 160.00")
+        self.assert_review(self.decide(), "the line declares 400.00 in IVA, but 16% of 1000.00 is 160.00 (240.00 more)")
 
     def test_iva_rate_that_does_not_exist_goes_to_review(self):
         self.propose(cfdi(rate="0.500000"))
-        self.assert_review(self.decide(), "is not an allowed rate")
+        self.assert_review(self.decide(), "is not allowed; only 16%, 8% and 0% are")
 
     def test_tax_other_than_iva_goes_to_review(self):
         self.propose(cfdi(tax="003"))
-        self.assert_review(self.decide(), "is not IVA")
+        self.assert_review(self.decide(), "a tax other than IVA (SAT code 003)")
 
     def test_reduced_border_iva_rate_matches(self):
         """8% IVA is legal in the northern and southern border regions."""
@@ -280,7 +280,7 @@ class DecisionTest(unittest.TestCase):
         content = cfdi().replace(b'SubTotal="1600.00"', b'SubTotal="1600.00" Descuento="500.00"').replace(
             b'Total="1856.00"', b'Total="1356.00"')
         self.propose(content)
-        self.assert_review(self.decide(), "Descuento 500.00 differs from the sum of the line discounts 0")
+        self.assert_review(self.decide(), "The header declares a discount of 500.00, but the line discounts add up to 0.00 (500.00 more)")
 
     def test_all_reasons_are_reported_together(self):
         self.propose(cfdi(oil=("12", "210.00", "2520.00")))

@@ -389,8 +389,8 @@ class GatekeeperStressTest(unittest.TestCase):
         self.assertEqual(self.guardrail.calls, [])
         item = self.table.get_item(Key={"uuid": UUID})["Item"]
         self.assertEqual(item["status"], "needs_review")
-        self.assertIn("at or above the automatic matching limit 10000", item["decision_reasons"][0])
-        self.assertIn("the larger of SubTotal and Total", item["decision_reasons"][0])
+        self.assertIn("at or above the automatic matching limit of 10000", item["decision_reasons"][0])
+        self.assertIn("the larger of its subtotal and total", item["decision_reasons"][0])
 
     def test_total_above_the_limit_goes_to_review(self):
         self.deliver("emails/big", make_email([xml_attachment(cfdi(subtotal="109400.00", total="126904.00"))]))

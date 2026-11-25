@@ -48,6 +48,16 @@ IVA_RATES = {Decimal("0.16"), Decimal("0.08"), Decimal("0")}
 serializer = TypeSerializer()
 
 
+def gap(declared: Decimal, expected: Decimal) -> str:
+    """How far a declared amount is from the computed one, for the reviewer: " (586.00 more)"."""
+    difference = (declared - expected).quantize(ROUNDING)
+    return f" ({difference} more)" if difference > 0 else f" ({-difference} less)"
+
+
+def percent(rate: Decimal) -> str:
+    return f"{(rate * 100).normalize():f}%"
+
+
 def av(value):
     """Python value -> DynamoDB AttributeValue (for the low-level transaction API)."""
     return serializer.serialize(value)
@@ -64,19 +74,21 @@ def check_discounts_and_taxes(cfdi: dict) -> list[str]:
 
     line_discounts = sum((line["discount"] for line in lines), Decimal("0"))
     if abs(line_discounts - cfdi["discount"]) > ROUNDING:
-        reasons.append(f"Descuento {cfdi['discount']} differs from the sum of the line discounts {line_discounts}.")
+        reasons.append(
+            f"The header declares a discount of {cfdi['discount']}, but the line discounts add up to "
+            f"{line_discounts.quantize(ROUNDING)}{gap(cfdi['discount'], line_discounts)}.")
 
     line_transferred = sum(
         (tax["amount"] for line in lines for tax in line["taxes"]["transferred"]), Decimal("0"))
     if abs(line_transferred - cfdi["transferred_taxes"]) > tolerance:
         reasons.append(
-            f"TotalImpuestosTrasladados {cfdi['transferred_taxes']} differs from the sum of the line taxes "
-            f"{line_transferred}.")
+            f"The header declares {cfdi['transferred_taxes']} in taxes, but the line taxes add up to "
+            f"{line_transferred.quantize(ROUNDING)}{gap(cfdi['transferred_taxes'], line_transferred)}.")
 
     line_withheld = sum((tax["amount"] for line in lines for tax in line["taxes"]["withheld"]), Decimal("0"))
     if cfdi["withheld_taxes"] or line_withheld:
         reasons.append(
-            f"The invoice withholds taxes ({max(cfdi['withheld_taxes'], line_withheld)}); "
+            f"The invoice withholds {max(cfdi['withheld_taxes'], line_withheld)} in taxes; "
             "a person must review it.")
 
     for line in lines:
@@ -84,18 +96,23 @@ def check_discounts_and_taxes(cfdi: dict) -> list[str]:
         for tax in line["taxes"]["transferred"]:
             label = f"Invoice line {line['line']}"
             if tax["tax"] != IVA:
-                reasons.append(f"{label}: tax {tax['tax']!r} is not IVA; a person must review it.")
+                reasons.append(f"{label}: it charges a tax other than IVA (SAT code {tax['tax']}); a person must review it.")
                 continue
             if tax["factor"] == "Exento":
                 continue
             if tax["factor"] != "Tasa" or tax["rate"] not in IVA_RATES:
-                reasons.append(f"{label}: IVA {tax['factor']} {tax['rate']} is not an allowed rate.")
+                reasons.append(
+                    f"{label}: the IVA rate ({tax['factor']} {tax['rate']}) is not allowed; only 16%, 8% and 0% are.")
                 continue
             if abs(tax["base"] - net) > ROUNDING:
-                reasons.append(f"{label}: IVA base {tax['base']} differs from Importe - Descuento = {net}.")
+                reasons.append(
+                    f"{label}: IVA is charged on {tax['base']}, but the line amount after discount is "
+                    f"{net}{gap(tax['base'], net)}.")
             expected = (tax["base"] * tax["rate"]).quantize(ROUNDING)
             if abs(expected - tax["amount"]) > ROUNDING:
-                reasons.append(f"{label}: IVA {tax['amount']} differs from base x rate = {expected}.")
+                reasons.append(
+                    f"{label}: the line declares {tax['amount']} in IVA, but {percent(tax['rate'])} of "
+                    f"{tax['base']} is {expected}{gap(tax['amount'], expected)}.")
     return reasons
 
 
@@ -109,7 +126,7 @@ def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
         return ["The stored XML does not belong to this invoice record."]
 
     if cfdi["type"] != "I":
-        reasons.append(f"Invoice type is {cfdi['type']!r}; only income invoices (I) are matched automatically.")
+        reasons.append(f"The invoice type is {cfdi['type']!r}; only income invoices (I) are matched automatically.")
 
     # The limit measures the size of the purchase: the larger of SubTotal (the
     # goods before discounts and withholding) and Total. The gatekeeper applies
@@ -117,8 +134,8 @@ def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
     amount = max(cfdi["subtotal"], cfdi["total"])
     if amount >= MAX_AUTO_MATCH_TOTAL:
         reasons.append(
-            f"Invoice amount {amount} (the larger of SubTotal and Total) is at or above the automatic "
-            f"matching limit {MAX_AUTO_MATCH_TOTAL}; a person must review it.")
+            f"The invoice is for {amount} (the larger of its subtotal and total), at or above the automatic "
+            f"matching limit of {MAX_AUTO_MATCH_TOTAL}; a person must review it.")
 
     if order is None:
         reasons.append("No open purchase order was matched to this invoice.")
@@ -131,11 +148,14 @@ def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
     # --- Invoice arithmetic (independent of the order) ------------------------
     line_sum = sum((line["amount"] for line in cfdi["lines"]), Decimal("0"))
     if abs(line_sum - cfdi["subtotal"]) > ROUNDING:
-        reasons.append(f"SubTotal {cfdi['subtotal']} differs from the sum of the lines {line_sum}.")
+        reasons.append(
+            f"The header declares a subtotal of {cfdi['subtotal']}, but the lines add up to "
+            f"{line_sum.quantize(ROUNDING)}{gap(cfdi['subtotal'], line_sum)}.")
     expected_total = cfdi["subtotal"] - cfdi["discount"] + cfdi["transferred_taxes"] - cfdi["withheld_taxes"]
     if abs(expected_total - cfdi["total"]) > ROUNDING:
         reasons.append(
-            f"Total {cfdi['total']} differs from SubTotal - Descuento + taxes = {expected_total}.")
+            f"The header declares a total of {cfdi['total']}, but subtotal - discount + taxes - withholding "
+            f"is {expected_total}{gap(cfdi['total'], expected_total)}.")
     reasons += check_discounts_and_taxes(cfdi)
 
     # --- Line by line ----------------------------------------------------------
@@ -164,7 +184,9 @@ def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
         label = f"Invoice line {number} / order line {int(order_line['line'])}"
         expected_amount = (line["quantity"] * line["unit_price"]).quantize(ROUNDING)
         if abs(expected_amount - line["amount"]) > ROUNDING:
-            reasons.append(f"{label}: Importe {line['amount']} differs from Cantidad x ValorUnitario = {expected_amount}.")
+            reasons.append(
+                f"{label}: the line amount is {line['amount']}, but {line['quantity']} x {line['unit_price']} "
+                f"is {expected_amount}{gap(line['amount'], expected_amount)}.")
 
         pending = Decimal(order_line["quantity"]) - Decimal(invoiced.get(str(int(order_line["line"])), 0))
         if line["quantity"] > pending:
@@ -172,7 +194,9 @@ def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
 
         agreed = Decimal(order_line["unit_price"])
         if abs(line["unit_price"] - agreed) > PRICE_TOLERANCE:
-            reasons.append(f"{label}: unit price {line['unit_price']} differs from the agreed price {agreed}.")
+            reasons.append(
+                f"{label}: unit price {line['unit_price']} differs from the agreed price "
+                f"{agreed}{gap(line['unit_price'], agreed)}.")
 
     return reasons
 

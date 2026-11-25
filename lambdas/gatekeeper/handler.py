@@ -165,8 +165,8 @@ def review_rule(data: dict):
     amount = max(Decimal(data["subtotal"]), Decimal(data["total"]))
     if amount >= MAX_AUTO_MATCH_TOTAL:
         return "total_limit", (
-            f"Invoice amount {amount} MXN (the larger of SubTotal and Total) is at or above the "
-            f"automatic matching limit {MAX_AUTO_MATCH_TOTAL}; a person must review it.")
+            f"The invoice is for {amount} MXN (the larger of its subtotal and total), at or above the "
+            f"automatic matching limit of {MAX_AUTO_MATCH_TOTAL}; a person must review it.")
     return None, None
 
 
