@@ -22,7 +22,7 @@ os.environ.update(
     PURCHASE_ORDERS_TABLE="test-purchase-orders",
     BUCKET="test-bucket",
     PRICE_TOLERANCE="0.01",
-    MAX_AUTO_MATCH_TOTAL="50000",
+    MAX_AUTO_MATCH_TOTAL="10000",
 )
 
 import boto3  # noqa: E402
@@ -200,10 +200,16 @@ class DecisionTest(unittest.TestCase):
     def test_large_invoice_always_goes_to_review(self):
         with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1000")):
             self.propose(cfdi())  # total 1856.00, everything else matches
-            self.assert_review(self.decide(), "above the automatic matching limit 1000")
+            self.assert_review(self.decide(), "at or above the automatic matching limit 1000")
 
-    def test_invoice_at_the_limit_matches(self):
+    def test_invoice_exactly_at_the_limit_goes_to_review(self):
+        """The limit is inclusive: a total equal to it needs a person, as in the gatekeeper."""
         with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1856.00")):
+            self.propose(cfdi())
+            self.assert_review(self.decide(), "at or above the automatic matching limit 1856.00")
+
+    def test_invoice_one_cent_below_the_limit_matches(self):
+        with mock.patch.object(self.handler, "MAX_AUTO_MATCH_TOTAL", Decimal("1856.01")):
             self.propose(cfdi())
             self.assertEqual(self.decide()["result"], "matched")
 

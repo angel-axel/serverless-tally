@@ -186,14 +186,14 @@ variable "decision_price_tolerance" {
   }
 }
 
-variable "decision_max_auto_match_total" {
-  description = "Invoices with a total above this amount always go to needs_review, even when every check passes."
+variable "max_auto_match_total" {
+  description = "Invoices with a total at or above this amount (MXN) always go to needs_review. The gatekeeper checks the total the supplier declares, before the guardrail and the agent; the decision Lambda checks it again on the verified total."
   type        = string
-  default     = "50000"
+  default     = "10000"
 
   validation {
-    condition     = can(regex("^[0-9]+(\\.[0-9]{1,2})?$", var.decision_max_auto_match_total))
-    error_message = "Use a non-negative amount with up to two decimals, for example \"50000\"."
+    condition     = can(regex("^[0-9]+(\\.[0-9]{1,2})?$", var.max_auto_match_total))
+    error_message = "Use a non-negative amount with up to two decimals, for example \"10000\"."
   }
 }
 

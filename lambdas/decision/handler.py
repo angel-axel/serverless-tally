@@ -36,7 +36,7 @@ purchase_orders = dynamodb.Table(PURCHASE_ORDERS_TABLE)
 BUCKET = os.environ["BUCKET"]
 PRICE_TOLERANCE = Decimal(os.environ.get("PRICE_TOLERANCE", "0.01"))
 # Invoices above this total always go to a person, even if everything matches
-MAX_AUTO_MATCH_TOTAL = Decimal(os.environ.get("MAX_AUTO_MATCH_TOTAL", "50000"))
+MAX_AUTO_MATCH_TOTAL = Decimal(os.environ.get("MAX_AUTO_MATCH_TOTAL", "10000"))
 
 # CFDI amounts are rounded to cents; allow one cent per comparison
 ROUNDING = Decimal("0.01")
@@ -61,9 +61,11 @@ def check(invoice: dict, cfdi: dict, order: dict | None) -> list[str]:
     if cfdi["type"] != "I":
         reasons.append(f"Invoice type is {cfdi['type']!r}; only income invoices (I) are matched automatically.")
 
-    if cfdi["total"] > MAX_AUTO_MATCH_TOTAL:
+    # The gatekeeper applies the same limit to the declared total; this check
+    # uses the total of the XML after every amount in it has been verified
+    if cfdi["total"] >= MAX_AUTO_MATCH_TOTAL:
         reasons.append(
-            f"Total {cfdi['total']} is above the automatic matching limit {MAX_AUTO_MATCH_TOTAL}; "
+            f"Total {cfdi['total']} is at or above the automatic matching limit {MAX_AUTO_MATCH_TOTAL}; "
             "a person must review it.")
 
     if order is None:

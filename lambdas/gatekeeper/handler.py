@@ -19,6 +19,11 @@ What it does:
   one issuer and one stamp (in its official place), a well-formed UUID and RFC,
   and SAT catalog codes in ``ClaveProdServ`` and ``ClaveUnidad``. Those codes
   reach the agent, and a code is checked by its format, not by the guardrail.
+- Sends to review, without screening it or running the agent, every invoice
+  whose declared total is at or above ``MAX_AUTO_MATCH_TOTAL`` or whose currency
+  is not MXN. The decision Lambda applies the same limit to the total it
+  recomputes from the lines, so a low declared total cannot sneak a large
+  invoice through.
 - Copies emails without any CFDI to ``non-invoices/``.
 
 Every decision here is deterministic, except the guardrail's classification,
@@ -33,6 +38,7 @@ import os
 import pyexpat
 import re
 import urllib.parse
+from decimal import Decimal
 from datetime import datetime, timezone
 from email import policy
 from xml.etree.ElementTree import ParseError, fromstring
@@ -51,6 +57,7 @@ table = boto3.resource("dynamodb").Table(os.environ["INVOICES_TABLE"])
 guardrail = boto3.client("bedrock-runtime")
 GUARDRAIL_ID = os.environ["GUARDRAIL_ID"]
 GUARDRAIL_VERSION = os.environ["GUARDRAIL_VERSION"]
+MAX_AUTO_MATCH_TOTAL = Decimal(os.environ.get("MAX_AUTO_MATCH_TOTAL", "10000"))
 
 NS = {
     "cfdi": "http://www.sat.gob.mx/cfd/4",
@@ -64,6 +71,8 @@ UUID_PATTERN = re.compile(r"^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-
 RFC_PATTERN = re.compile(r"^[A-Z\u00d1&]{3,4}[0-9]{6}[A-Z0-9]{3}$")
 CLAVE_PROD_SERV_PATTERN = re.compile(r"^[0-9]{8}$")
 CLAVE_UNIDAD_PATTERN = re.compile(r"^[A-Z0-9]{1,3}$")
+AMOUNT_PATTERN = re.compile(r"^[0-9]{1,15}(\.[0-9]{1,6})?$")
+CURRENCY_PATTERN = re.compile(r"^[A-Z]{3}$")
 
 # Errors S3 returns when a conditional write finds the object already there
 OBJECT_EXISTS_ERRORS = ("PreconditionFailed", "ConditionalRequestConflict")
@@ -71,6 +80,7 @@ OBJECT_EXISTS_ERRORS = ("PreconditionFailed", "ConditionalRequestConflict")
 # Fixed texts: a stored reason never repeats what the supplier wrote
 FLAGGED_REASON = "Supplier text in the invoice was flagged by the guardrail as a possible prompt attack or processing instruction; a person must review it."
 UNAVAILABLE_REASON = "Supplier text in the invoice could not be screened by the guardrail; a person must review it."
+CURRENCY_REASON = "The invoice currency is not MXN; a person must review it."
 
 
 def parse_cfdi(content: bytes):
@@ -113,6 +123,11 @@ def parse_cfdi(content: bytes):
         return None, "the UUID is not a valid CFDI UUID"
     if not RFC_PATTERN.match(data["issuer_rfc"]):
         return None, "the issuer RFC is not a valid RFC"
+    if not AMOUNT_PATTERN.match(data["total"]):
+        return None, "the Total is not a valid amount"
+    data["currency"] = (root.get("Moneda") or "").strip().upper()
+    if not CURRENCY_PATTERN.match(data["currency"]):
+        return None, "the Moneda is not a currency code"
 
     concepts = root.findall("cfdi:Conceptos/cfdi:Concepto", NS)
     if not concepts:
@@ -129,6 +144,21 @@ def parse_cfdi(content: bytes):
         texts += [concept.get(name) or "" for name in ("Descripcion", "NoIdentificacion", "Unidad")]
     data["supplier_texts"] = list(dict.fromkeys(text.strip() for text in texts if text.strip()))
     return data, None
+
+
+def review_rule(data: dict):
+    """Return a fixed reason if a rule sends this invoice straight to a person, else None.
+
+    The total is the one the supplier declares; the decision Lambda checks the
+    same limit again against the total it recomputes from the lines.
+    """
+    if data["currency"] != "MXN":
+        return "currency", CURRENCY_REASON
+    if Decimal(data["total"]) >= MAX_AUTO_MATCH_TOTAL:
+        return "total_limit", (
+            f"Total {data['total']} MXN is at or above the automatic matching limit "
+            f"{MAX_AUTO_MATCH_TOTAL}; a person must review it.")
+    return None, None
 
 
 def screen(texts: list) -> tuple:
@@ -170,11 +200,11 @@ def copy_email(bucket: str, key: str, destination_prefix: str) -> str:
     return destination
 
 
-def store_invoice(bucket: str, email_key: str, content: bytes, data: dict, verdict: str = "clean") -> str:
+def store_invoice(bucket: str, email_key: str, content: bytes, data: dict, review_reason: str = None) -> str:
     """Store the XML and register it.
 
-    A clean invoice is registered as "received" (the agent picks it up); a
-    flagged or unscreened one as "needs_review" (the agent never sees it).
+    Without a review reason the invoice is registered as "received" (the agent
+    picks it up); with one, as "needs_review" (the agent never sees it).
 
     Returns:
       'stored'    - new invoice, XML stored and registered.
@@ -222,12 +252,8 @@ def store_invoice(bucket: str, email_key: str, content: bytes, data: dict, verdi
         "email_key": email_key,
         "received_at": now,
     }
-    if verdict != "clean":
-        item.update(
-            status="needs_review",
-            decision_reasons=[FLAGGED_REASON if verdict == "flagged" else UNAVAILABLE_REASON],
-            decided_at=now,
-        )
+    if review_reason:
+        item.update(status="needs_review", decision_reasons=[review_reason], decided_at=now)
     try:
         table.put_item(
             Item=item,
@@ -266,6 +292,7 @@ def handler(event, context):
 
         outcomes = {"stored": [], "duplicate": [], "conflict": []}
         screening = {}
+        by_rule = {}
         rejected = []
         for part in message.iter_attachments():
             filename = (part.get_filename() or "").lower()
@@ -277,10 +304,18 @@ def handler(event, context):
                 if reason != "not_cfdi":
                     rejected.append({"file": filename[:100], "reason": reason})
                 continue
-            verdict, filters = screen(data["supplier_texts"])
-            outcome = store_invoice(bucket, key, content, data, verdict)
+            # A rule that already sends the invoice to a person saves the guardrail call
+            rule, review_reason = review_rule(data)
+            verdict, filters = ("skipped", []) if rule else screen(data["supplier_texts"])
+            if verdict == "flagged":
+                review_reason = FLAGGED_REASON
+            elif verdict == "unavailable":
+                review_reason = UNAVAILABLE_REASON
+            outcome = store_invoice(bucket, key, content, data, review_reason)
             outcomes[outcome].append(data["uuid"])
-            if outcome == "stored" and verdict != "clean":
+            if outcome == "stored" and rule:
+                by_rule[data["uuid"]] = rule
+            if outcome == "stored" and verdict in ("flagged", "unavailable"):
                 screening[data["uuid"]] = {"guardrail": verdict, "filters": filters}
 
         summary["invoices"] = outcomes["stored"]
@@ -288,6 +323,8 @@ def handler(event, context):
         summary["conflicts"] = outcomes["conflict"]
         # Invoices sent to review by the guardrail ("flagged" or "unavailable")
         summary["screened_out"] = screening
+        # Invoices sent to review by a rule before screening ("total_limit" or "currency")
+        summary["review_by_rule"] = by_rule
         # Files that are CFDI but break a SAT rule; the reason is a fixed text
         summary["rejected"] = rejected
         if not any(outcomes.values()):

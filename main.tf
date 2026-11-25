@@ -337,9 +337,10 @@ resource "aws_lambda_function" "lambda_function_gatekeeper" {
 
   environment {
     variables = {
-      INVOICES_TABLE    = aws_dynamodb_table.invoices_dynamodb_table.name
-      GUARDRAIL_ID      = aws_bedrock_guardrail.invoice_matcher_guardrail.guardrail_id
-      GUARDRAIL_VERSION = aws_bedrock_guardrail_version.invoice_matcher_guardrail_version.version
+      INVOICES_TABLE       = aws_dynamodb_table.invoices_dynamodb_table.name
+      GUARDRAIL_ID         = aws_bedrock_guardrail.invoice_matcher_guardrail.guardrail_id
+      GUARDRAIL_VERSION    = aws_bedrock_guardrail_version.invoice_matcher_guardrail_version.version
+      MAX_AUTO_MATCH_TOTAL = var.max_auto_match_total
     }
   }
 
@@ -565,7 +566,7 @@ resource "aws_lambda_function" "lambda_function_decision" {
       PURCHASE_ORDERS_TABLE = aws_dynamodb_table.purchase_orders_dynamodb_table.name
       BUCKET                = aws_s3_bucket.s3_bucket.id
       PRICE_TOLERANCE       = var.decision_price_tolerance
-      MAX_AUTO_MATCH_TOTAL  = var.decision_max_auto_match_total
+      MAX_AUTO_MATCH_TOTAL  = var.max_auto_match_total
     }
   }
 
